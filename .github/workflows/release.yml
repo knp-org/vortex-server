@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.2.0)'
+        required: true
+        default: 'v0.2.0'
+
+jobs:
+  build-release:
+    name: Build Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: vortex_server_amd64.deb
+            use_cross: false
+            package_deb: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            asset_name: vortex_server_arm64.deb
+            use_cross: false
+            package_deb: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset_name: vortex_server.exe
+            use_cross: false
+            package_deb: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+
+
+      - name: Install cargo-deb
+        if: matrix.package_deb
+        run: cargo install cargo-deb
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: ${{ matrix.use_cross }}
+          command: build
+          args: --release --target ${{ matrix.target }} --bin vortex_server
+
+      - name: Package Deb
+        if: matrix.package_deb
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: ${{ matrix.use_cross }}
+          command: deb
+          args: --target ${{ matrix.target }} --no-build --output ${{ matrix.asset_name }}
+
+      - name: Rename Windows Binary
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: mv target/${{ matrix.target }}/release/vortex_server.exe ${{ matrix.asset_name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  create-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            vortex_server_amd64.deb/vortex_server_amd64.deb
+            vortex_server_arm64.deb/vortex_server_arm64.deb
+            vortex_server.exe/vortex_server.exe

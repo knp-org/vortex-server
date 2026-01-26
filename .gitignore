@@ -1,0 +1,36 @@
+# Rust
+/target
+/data
+**/*.rs.bk
+.env
+
+# Android
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+*.ids
+*.hprof
+/captures
+*.jks
+google-services.json
+.cxx/
+
+# VS Code
+.vscode/
+
+# System
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+
+# Agent Artifacts
+.gemini/
+.agent/
+
+/thumbnails
+vortex_server.db
+vortex_server.db-shm
+vortex_server.db-wal
