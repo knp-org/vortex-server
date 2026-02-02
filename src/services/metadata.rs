@@ -1,6 +1,6 @@
 use crate::models::metadata::{NormalizedMetadata, EpisodeMetadata};
-use crate::providers::traits::MetadataProvider;
-use crate::providers::tmdb::TmdbProvider;
+use crate::metadata_providers::traits::MetadataProvider;
+use crate::metadata_providers::tmdb::TmdbProvider;
 use sqlx::SqlitePool;
 use crate::error::AppError;
 

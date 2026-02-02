@@ -32,5 +32,7 @@ pub struct SeriesDetailDto {
     pub plot: Option<String>,
     pub year: Option<i64>,
     pub genres: Option<String>,
+    pub cast: Option<String>,
+    pub director: Option<String>,
     pub seasons: Vec<SeasonDto>,
 }

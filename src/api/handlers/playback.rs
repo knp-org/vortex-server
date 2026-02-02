@@ -162,15 +162,20 @@ pub async fn stream_video(
             response.headers_mut().insert(header::CONTENT_LENGTH, length.to_string().parse().unwrap());
             response.headers_mut().insert(header::CONTENT_TYPE, mime.parse().unwrap());
             response.headers_mut().insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+            response.headers_mut().insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
 
             Ok(response)
         }
         None => {
-            let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
+            // For initial request without range, use chunked streaming for faster start
+            let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024); // 64KB chunks
+            let body = Body::from_stream(stream);
+            
             let mut response = Response::new(body);
             response.headers_mut().insert(header::CONTENT_LENGTH, file_size.to_string().parse().unwrap());
             response.headers_mut().insert(header::CONTENT_TYPE, mime.parse().unwrap());
             response.headers_mut().insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+            response.headers_mut().insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
             Ok(response)
         }
     }
@@ -280,17 +285,23 @@ pub async fn stream_subtitle(
 
     let content = tokio::fs::read_to_string(&subtitle_path).await.map_err(|_| AppError::Internal("Failed to read subtitle".to_string()))?;
     
-    // Simple MIME type detection based on extension
-    let mime = if filename.ends_with(".vtt") {
-        "text/vtt"
+    // Convert to WebVTT if it's an SRT file
+    let (final_content, mime) = if filename.ends_with(".srt") {
+        // Simple SRT to VTT conversion using Regex to avoid replacing commas in text
+        // Timestamps: 00:00:00,000 -> 00:00:00.000
+        let re = regex::Regex::new(r"(\d{2}:\d{2}:\d{2}),(\d{3})").unwrap();
+        let vtt_content = format!("WEBVTT\n\n{}", re.replace_all(&content, "$1.$2"));
+        (vtt_content, "text/vtt")
+    } else if filename.ends_with(".vtt") {
+        (content, "text/vtt")
     } else {
-        "application/x-subrip" // for .srt
+        (content, "application/x-subrip")
     };
 
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, mime.parse().unwrap());
     
-    Ok((headers, content))
+    Ok((headers, final_content))
 }
 
 pub async fn get_thumbnail(

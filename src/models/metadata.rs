@@ -12,6 +12,25 @@ pub struct NormalizedMetadata {
     pub genres: Option<Vec<String>>,
     pub runtime: Option<i32>,
     pub rating: Option<f32>,
+    pub cast: Option<Vec<CastMember>>,
+    pub director: Option<Vec<String>>,
+    pub tagline: Option<String>,
+    pub status: Option<String>,
+    pub original_language: Option<String>,
+    pub popularity: Option<f32>,
+    pub budget: Option<i64>,
+    pub revenue: Option<i64>,
+    pub homepage: Option<String>,
+    pub imdb_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CastMember {
+    pub name: String,
+    pub character: String,
+    pub role: String, // "actor" or "job" (Director/etc)
+    pub profile_url: Option<String>,
+    pub order: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -34,12 +34,4 @@ pub async fn update_setting(
     Ok(StatusCode::OK)
 }
 
-pub async fn reset_database(State(pool): State<SqlitePool>) -> Result<StatusCode, AppError> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM playback_progress").execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM media").execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM libraries").execute(&mut *tx).await?;
-    tx.commit().await?;
-    
-    Ok(StatusCode::OK)
-}
+

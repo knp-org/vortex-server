@@ -4,9 +4,9 @@ use axum::{
 };
 use sqlx::SqlitePool;
 use crate::error::AppError;
-use crate::core::media_service;
+use crate::services::media_service;
 
-use crate::dtos::requests::IdentifyRequest;
+use crate::api::dtos::requests::IdentifyRequest;
 use crate::models::tv::{SeriesDto, SeasonDto, EpisodeDto, SeriesDetailDto};
 
 pub async fn get_all_series(State(pool): State<SqlitePool>) -> Result<Json<Vec<SeriesDto>>, AppError> {
@@ -112,12 +112,14 @@ pub async fn get_series_detail(
     
     tracing::info!("Fetching details for series: '{}'", series_name);
 
-    let series_info: Option<(Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
-        "SELECT poster_url, backdrop_url, plot, year, genres FROM media WHERE series_name = ? AND poster_url IS NOT NULL LIMIT 1"
+    let series_info: Option<(Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT poster_url, backdrop_url, plot, year, genres, \"cast\", director FROM media WHERE series_name = ? AND poster_url IS NOT NULL LIMIT 1"
     )
     .bind(&series_name)
     .fetch_optional(&pool)
     .await?;
+
+    // ... seasons query ...
 
     let season_rows: Vec<(i32, i32, Option<String>)> = sqlx::query_as(
         "SELECT season_number, COUNT(*) as episode_count,
@@ -141,7 +143,7 @@ pub async fn get_series_detail(
         })
         .collect();
 
-    let (poster_url, backdrop_url, plot, year, genres) = series_info.unwrap_or((None, None, None, None, None));
+    let (poster_url, backdrop_url, plot, year, genres, cast, director) = series_info.unwrap_or((None, None, None, None, None, None, None));
 
     Ok(Json(SeriesDetailDto {
         name: series_name,
@@ -150,6 +152,8 @@ pub async fn get_series_detail(
         plot,
         year,
         genres,
+        cast,
+        director,
         seasons,
     }))
 }
@@ -158,14 +162,39 @@ pub async fn refresh_series_metadata(
     Path(encoded_name): Path<String>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<SeriesDetailDto>, AppError> {
-    use crate::core::metadata::{fetch_metadata, fetch_episodes, get_default_provider};
+    use crate::services::metadata::{fetch_metadata, fetch_by_id, fetch_episodes, get_default_provider};
     
     let series_name = urlencoding::decode(&encoded_name)
         .unwrap_or(std::borrow::Cow::Borrowed(&encoded_name))
         .into_owned();
 
-    let meta = fetch_metadata(&series_name, Some("series"), &pool).await
-        .map_err(|e| AppError::External(format!("Failed to fetch metadata: {}", e)))?;
+    // Check DB for existing provider_id
+    let mut provider_id_to_use = None;
+    let existing: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT provider_ids FROM media WHERE series_name = ? LIMIT 1"
+    )
+    .bind(&series_name)
+    .fetch_optional(&pool)
+    .await?;
+
+    if let Some((Some(json_str),)) = existing {
+        if let Ok(ids) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&json_str) {
+            let provider_name = get_default_provider(&pool).await;
+             if let Some(v) = ids.get(&provider_name) {
+                 if let Some(s) = v.as_str() { provider_id_to_use = Some(s.to_string()); }
+                 else if let Some(i) = v.as_i64() { provider_id_to_use = Some(i.to_string()); }
+            }
+        }
+    }
+
+    let meta = if let Some(id) = provider_id_to_use {
+        tracing::info!("Refreshing series using ID: {}", id);
+        fetch_by_id(&id, Some("series"), &pool).await
+            .map_err(|e| AppError::External(format!("Failed to fetch metadata by ID: {}", e)))?
+    } else {
+        fetch_metadata(&series_name, Some("series"), &pool).await
+            .map_err(|e| AppError::External(format!("Failed to fetch metadata: {}", e)))?
+    };
 
     media_service::update_series_metadata(&pool, &series_name, &meta).await?;
     
@@ -214,7 +243,7 @@ pub async fn identify_series(
     Path(encoded_name): Path<String>,
     Json(payload): Json<IdentifyRequest>,
 ) -> Result<Json<SeriesDetailDto>, AppError> {
-    use crate::core::metadata::{fetch_by_id, fetch_episodes};
+    use crate::services::metadata::{fetch_by_id, fetch_episodes};
 
     let series_name = urlencoding::decode(&encoded_name)
         .unwrap_or(std::borrow::Cow::Borrowed(&encoded_name))

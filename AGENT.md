@@ -1,85 +1,93 @@
 # Project Context for AI Agents
 
 **Project Name:** Vortex Media Server
-**Purpose:** Self-hosted media server with a high-performance backend and a premium Android client.
+**Purpose:** Self-hosted media server with a high-performance Rust backend and a modern React web client.
 
 ---
 
 ## Architecture Overview
 
-The project is a **monorepo** containing both the Backend server and the Android client.
+The project is structured as a **monorepo** (conceptually) containing the Backend server and the Web client.
 
-### 1. Backend (`/`)
+### 1. Backend (`vortex-server`)
 - **Language:** Rust
 - **Framework:** Axum (Web), Tokio (Async Runtime)
 - **Database:** SQLite (via SQLx)
-- **Architecture:** Modular Monolith
-- **Key Modules:**
-    - `src/api`: REST API route handlers.
-    - `src/core`: Business logic (Scanner, Transocder/Streamer).
-    - `src/models`: DB structs and Domain entities.
-    - `src/providers`: Metadata fetchers (TMDB).
+- **Architecture:** Layered Service Architecture (API -> Service -> Repository/DB)
+- **Key Design Pattern:** 
+  - **Controllers (Handlers):** Thin layer, parses HTTP/JSON, calls Services.
+  - **Services:** Contains all business logic (Transcoding, Scanning, Metadata).
+  - **Models:** Pure data structures (DTOs and DB Entities).
 
-### 2. Frontend (`/android_app`)
-- **Language:** Kotlin
-- **Framework:** Jetpack Compose (UI), Hilt (DI), ViewModel
-- **Architecture:** MVVM + Clean Architecture principles
-- **Theme:** "Glassy" Design System (Translucent/Blur effects).
-- **Key Packages:**
-    - `ui/screens`: Composable screens (Home, Player, Details).
-    - `ui/components`: Reusable UI widgets (GlassyCard, GlassyTopBar).
-    - `data/repository`: Data fetching (Retrofit + Room/Preferences).
-    - `di`: Hilt Dependency Injection modules.
+### 2. Frontend (`vortex-client`)
+- **Language:** TypeScript / React
+- **Build Tool:** Vite
+- **Styling:** Tailwind CSS + Lucide Icons
+- **Architecture:** Feature-based + Service Layer
+- **Key Concepts:**
+  - **Smart Player:** Detects browser capabilities (`DeviceProfile`) to optimize playback.
+  - **Centralized Services:** all API calls reside in `src/services/`.
+  - **Centralized Types:** Shared interfaces in `src/types/`.
 
 ---
 
-## Directory Map
+## Backend Directory Map (`vortex-server/src/`)
 
-### Backend (`src/`)
+| Path | Component | Description |
+| :--- | :--- | :--- |
+| `main.rs` | Entry Point | Sets up Tracing, Database Pool, App State, and Router. |
+| `api/` | **API Layer** | |
+| `api/handlers/` | Handlers | Business-logic agnostic controllers. Grouped by feature (`media`, `library`, `system`, `transcode`). |
+| `api/routes.rs` | Router | Defines all REST endpoints and middleware (Auth, Logging). |
+| `services/` | **Service Layer** | **Core Logic resides here.** |
+| `services/transcode/`| Transcoding | **Smart Transcoding Engine**. Contains `TranscodeService`, `HlsGenerator` (FFmpeg wrapper), and `DeviceProfile` logic. |
+| `services/scanner.rs`| Scanner | Recursive filesystem walker. Syncs files to DB. |
+| `services/metadata.rs`| Metadata | logic for fetching/refreshing metadata. |
+| `metadata_providers/`| Integration | External API Clients (e.g., `TmdbProvider` for Movie/TV data). |
+| `models/` | Data Layer | SQLx structs mapping to SQLite tables (e.g., `Media`, `Series`, `Episode`). |
+| `infrastructure/` | Infra | Cross-cutting concerns: `config.rs`, `logging.rs`. |
+
+## Frontend Directory Map (`vortex-client/src/`)
+
 | Path | Description |
 | :--- | :--- |
-| `main.rs` | Entry point. Sets up DB pool, Axum router, and starts server. |
-| `api/` | Route handlers (e.g., `media.rs`, `stream.rs`). Return JSON/Stream. |
-| `core/scanner.rs` | Logic for scanning filesystem and populating DB. |
-| `providers/tmdb.rs` | TMDB API integration for metadata matching. |
-| `models/` | Structs mapping to SQLite tables (e.g., `MediaItem`). |
-
-### Frontend (`android_app/.../org/knp/vortex/`)
-| Path | Description |
-| :--- | :--- |
-| `MainActivity.kt` | App Entry + Navigation Graph (`NavHost`). |
-| `ui/theme/` | `Color.kt`, `Theme.kt`. Defines the Dark/Glassy look. |
-| `ui/components/` | Core UI building blocks (`GlassyComponents.kt`). |
-| `ui/screens/home/` | Main dashboard (`HomeScreen.kt`). |
-| `ui/screens/player/` | Video player logic (`PlayerScreen.kt`, ExoPlayer). |
+| `pages/` | Page components. Refactored into subfolders (e.g., `settings/` with specific tabs). |
+| `services/` | API Service layer. `api.ts` (base wrapper), `libraries.ts`, `settings.ts`. return typed promises. |
+| `types/` | **Single Source of Truth** for TypeScript interfaces (`Media`, `DeviceProfile`, `StreamInfo`). |
+| `components/` | Reusable UI widgets. |
 
 ---
 
-## Conventions & Patterns
+## Key Workflows
+
+### 1. Smart Transcoding & Playback
+1. **Frontend**: `Player.tsx` calls `detectCapabilities()` to check codec support (HEVC, AV1, etc.).
+2. **Request**: Sends `DeviceProfile` payload to `POST /stream/:id/info`.
+3. **Decision**: `TranscodeService` checks if `DeviceProfile` supports the current file's video/audio/container.
+   - **Direct Play**: File served via `stream_video` (Range requests).
+   - **Direct Stream**: Video copied, Audio transcoded (HLS).
+   - **Transcode**: Full re-encode (HLS).
+
+### 2. Metadata Scanning
+1. **Trigger**: `/api/v1/scan` calls `Scanner::scan_library`.
+2. **Process**: 
+   - Walk filesystem.
+   - Parse filenames (name, year).
+   - `TmdbProvider` searches for match.
+   - **Optimization**: Images are stored as remote URLs initially (fast search), downloaded lazily for caching.
+   - Save to DB.
+
+---
+
+## Developer Conventions
 
 ### Backend (Rust)
-- **Error Handling:** Use `AppError` enum (mapped to HTTP status codes).
-- **State:** `AppState` struct holds the DB pool and Config. Passed via Axum `State` extractor.
-- **Async:** almost all IO is async. await database calls.
+- **Dependency Injection**: Services are initialized with `SqlitePool` (passed via Axum State).
+- **Error Handling**: Use `AppError` enum (impl `IntoResponse`).
+- **Async**: Heavy operations (FFmpeg, Scanning) run on Tokio tasks.
+- **Logging**: Use `tracing::info!` / `error!`.
 
-### Frontend (Android)
-- **UI State:** Each screen has a `ViewModel` exposing a `uiState` (StateFlow).
-- **Navigation:** All routes defined in `MainActivity`'s `AppNavigation`.
-- **Styling:** *Always* use `GlassyBackground` wrapper for screens. Use `GlassyCard` for containers.
-- **Images:** Use `AsyncImage` (Coil) with `shimmerEffect` placeholder.
-
-## Common Tasks
-
-- **Adding a new Screen:**
-    1. Create `Screen.kt` and `ViewModel.kt` in `ui/screens/newfeature`.
-    2. Add route to `MainActivity.kt`.
-    3. Use `GlassyBackground` as root.
-
-- **Adding a new API Endpoint:**
-    1. Create handler in `src/api/`.
-    2. Register route in `src/api/mod.rs` or `main.rs`.
-    3. Ensure `AppState` is added if DB access is needed.
-
----
-
-**End of Context**
+### Frontend (React)
+- **State**: Use `useState` for local, API services for data.
+- **API**: Never call `fetch` directly in components; use `src/services/`.
+- **Types**: Always import from `src/types/`, never define interfaces inline for Domain entities.

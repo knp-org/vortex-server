@@ -4,57 +4,19 @@ use axum::{
 };
 use sqlx::SqlitePool;
 use crate::error::AppError;
-use crate::core::media_service;
+use crate::services::media_service;
 use crate::models::db::media::Media;
 
 pub async fn get_library_media(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<Media>>, AppError> {
-    let media = sqlx::query_as::<_, Media>("SELECT m.*, l.library_type FROM media m JOIN libraries l ON m.library_id = l.id WHERE m.library_id = ? ORDER BY m.title ASC")
-        .bind(id)
-        .fetch_all(&pool)
-        .await?;
+    let media = media_service::get_by_library_id(&pool, id).await?;
     Ok(Json(media))
 }
 
 pub async fn get_recently_added(State(pool): State<SqlitePool>) -> Result<Json<Vec<Media>>, AppError> {
-    let query = "
-        SELECT 
-            MAX(media.id) as id,
-            media.library_id,
-            l.library_type,
-            MAX(media.file_path) as file_path,
-            COALESCE(media.series_name, media.title) as title,
-            media.year,
-            (CASE WHEN media.series_name IS NOT NULL THEN 
-                (SELECT poster_url FROM media m2 WHERE m2.series_name = media.series_name AND m2.poster_url IS NOT NULL LIMIT 1)
-             ELSE media.poster_url END) as poster_url,
-            media.plot,
-            (CASE WHEN media.series_name IS NOT NULL THEN 'series' ELSE 'movie' END) as media_type,
-            MAX(media.added_at) as added_at,
-            media.series_name,
-            NULL as season_number,
-            NULL as episode_number,
-            NULL as provider_ids,
-            (CASE WHEN media.series_name IS NOT NULL THEN 
-                (SELECT backdrop_url FROM media m2 WHERE m2.series_name = media.series_name AND m2.backdrop_url IS NOT NULL LIMIT 1)
-             ELSE media.backdrop_url END) as backdrop_url,
-            NULL as still_url,
-            media.runtime,
-            media.genres
-        FROM media
-        JOIN libraries l ON media.library_id = l.id
-        WHERE l.library_type != 'other'
-        GROUP BY COALESCE(media.series_name, media.id)
-        ORDER BY MAX(media.added_at) DESC
-        LIMIT 20
-    ";
-
-    let media = sqlx::query_as::<_, Media>(query)
-        .fetch_all(&pool)
-        .await?;
-    
+    let media = media_service::get_recently_added(&pool).await?;
     Ok(Json(media))
 }
 
@@ -62,12 +24,13 @@ pub async fn get_media_details(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>,
 ) -> Result<Json<Media>, AppError> {
-    let item = sqlx::query_as::<_, Media>("SELECT m.*, l.library_type FROM media m JOIN libraries l ON m.library_id = l.id WHERE m.id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Media with id {} not found", id)))?;
+    let item = media_service::get_details(&pool, id).await?;
     
+    tracing::info!("Fetched media details for id {}. Cast present: {}", id, item.cast.is_some());
+    if let Some(c) = &item.cast {
+        tracing::debug!("Cast data length: {}", c.len());
+    }
+
     Ok(Json(item))
 }
 
@@ -75,41 +38,73 @@ pub async fn refresh_media_metadata(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>,
 ) -> Result<Json<Media>, AppError> {
-    use crate::core::metadata::fetch_metadata;
+    use crate::services::metadata::{fetch_metadata, fetch_by_id, get_default_provider};
 
-    let media = sqlx::query_as::<_, Media>("SELECT * FROM media WHERE id = ?")
+    let media = sqlx::query_as::<_, Media>("
+        SELECT 
+            m.id, m.library_id, m.file_path, m.title, m.year, m.poster_url, m.plot, m.media_type, 
+            m.added_at, m.series_name, m.season_number, m.episode_number, m.provider_ids, 
+            m.backdrop_url, m.still_url, m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+            l.library_type, 
+            ('/api/v1/stream/' || m.id) as stream_url 
+        FROM media m 
+        JOIN libraries l ON m.library_id = l.id 
+        WHERE m.id = ?
+    ")
         .bind(id)
         .fetch_optional(&pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Media with id {} not found", id)))?;
 
-    let title_to_search = media.title.unwrap_or_else(|| {
-         std::path::Path::new(&media.file_path)
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-    });
+    // Try to get provider ID to fetch exact match
+    let provider_name = get_default_provider(&pool).await;
+    let provider_id = media.provider_ids.as_ref()
+        .and_then(|json_str| serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(json_str).ok())
+        .and_then(|ids| ids.get(&provider_name).cloned())
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Some(s.to_string())
+            } else if let Some(i) = v.as_i64() {
+                Some(i.to_string())
+            } else {
+                None
+            }
+        });
 
     let type_hint = if media.series_name.is_some() { Some("series") } else { Some("movie") };
 
-    tracing::info!("Refreshing metadata for: {}", title_to_search);
+    let meta = if let Some(id_str) = provider_id {
+        tracing::info!("Refreshing metadata using ID: {}", id_str);
+        fetch_by_id(&id_str, type_hint, &pool).await
+            .map_err(|e| AppError::External(format!("Failed to fetch metadata by ID: {}", e)))?
+    } else {
+        let title_to_search = if let Some(t) = &media.title {
+            t.clone()
+        } else {
+             std::path::Path::new(&media.file_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        };
 
-    let meta = fetch_metadata(&title_to_search, type_hint, &pool).await
-        .map_err(|e| AppError::External(format!("Failed to fetch metadata: {}", e)))?;
+        tracing::info!("Refreshing metadata by searching: {}", title_to_search);
+        fetch_metadata(&title_to_search, type_hint, &pool).await
+            .map_err(|e| AppError::External(format!("Failed to fetch metadata: {}", e)))?
+    };
 
     media_service::update_media_metadata(&pool, id, &meta).await?;
     
     get_media_details(State(pool), Path(id)).await
 }
 
-use crate::dtos::requests::{SearchQuery, IdentifyRequest};
+use crate::api::dtos::requests::{SearchQuery, IdentifyRequest};
 
 pub async fn search_handler(
     State(pool): State<SqlitePool>,
     axum::extract::Query(params): axum::extract::Query<SearchQuery>,
 ) -> Result<Json<Vec<crate::models::metadata::NormalizedMetadata>>, AppError> {
-    use crate::core::metadata::{search, fetch_by_id};
+    use crate::services::metadata::{search, fetch_by_id};
 
     let media_type = params.media_type.as_deref();
     
@@ -129,7 +124,7 @@ pub async fn identify_media(
     Path(id): Path<i64>,
     Json(payload): Json<IdentifyRequest>,
 ) -> Result<Json<Media>, AppError> {
-    use crate::core::metadata::fetch_by_id;
+    use crate::services::metadata::fetch_by_id;
 
     let media_type = payload.media_type.as_deref();
     let meta = fetch_by_id(&payload.provider_id, media_type, &pool).await?;
@@ -145,28 +140,58 @@ pub async fn search_library(
 ) -> Result<Json<Vec<Media>>, AppError> {
     let query_param = format!("%{}%", params.query);
     
-    let mut sql = String::from(
-        "SELECT m.*, l.library_type FROM media m 
-         JOIN libraries l ON m.library_id = l.id 
-         WHERE (m.title LIKE ? OR m.series_name LIKE ? OR m.plot LIKE ?)"
-    );
-
-    if params.media_type.is_some() {
-        sql.push_str(" AND m.media_type = ?");
-    }
-
-    sql.push_str(" ORDER BY m.title ASC");
-
-    let mut db_query = sqlx::query_as::<_, Media>(&sql)
+    // Use separate queries for better readability and query plan caching
+    let media = if let Some(media_type) = &params.media_type {
+        sqlx::query_as::<_, Media>(
+            "SELECT 
+                m.id, m.library_id, m.file_path, 
+                COALESCE(m.series_name, m.title) as title, 
+                m.year, m.poster_url, m.plot, 
+                (CASE WHEN m.series_name IS NOT NULL THEN 'series' ELSE m.media_type END) as media_type, 
+                m.added_at, m.series_name, 
+                NULL as season_number, NULL as episode_number, 
+                m.provider_ids, m.backdrop_url, m.still_url, 
+                m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+                l.library_type,
+                ('/api/v1/stream/' || m.id) as stream_url
+             FROM media m 
+             JOIN libraries l ON m.library_id = l.id 
+             WHERE (m.title LIKE ? OR m.series_name LIKE ? OR m.plot LIKE ?)
+             GROUP BY COALESCE(m.series_name, m.id)
+             HAVING l.library_type = ?
+             ORDER BY title ASC LIMIT 20"
+        )
         .bind(&query_param)
         .bind(&query_param)
-        .bind(&query_param);
-
-    if let Some(media_type) = &params.media_type {
-        db_query = db_query.bind(media_type);
-    }
-
-    let media = db_query.fetch_all(&pool).await?;
+        .bind(&query_param)
+        .bind(media_type)
+        .fetch_all(&pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, Media>(
+            "SELECT 
+                m.id, m.library_id, m.file_path, 
+                COALESCE(m.series_name, m.title) as title, 
+                m.year, m.poster_url, m.plot, 
+                (CASE WHEN m.series_name IS NOT NULL THEN 'series' ELSE m.media_type END) as media_type, 
+                m.added_at, m.series_name, 
+                NULL as season_number, NULL as episode_number, 
+                m.provider_ids, m.backdrop_url, m.still_url, 
+                m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+                l.library_type,
+                ('/api/v1/stream/' || m.id) as stream_url
+             FROM media m 
+             JOIN libraries l ON m.library_id = l.id 
+             WHERE (m.title LIKE ? OR m.series_name LIKE ? OR m.plot LIKE ?)
+             GROUP BY COALESCE(m.series_name, m.id)
+             ORDER BY title ASC LIMIT 20"
+        )
+        .bind(&query_param)
+        .bind(&query_param)
+        .bind(&query_param)
+        .fetch_all(&pool)
+        .await?
+    };
     
     Ok(Json(media))
 }
