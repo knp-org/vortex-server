@@ -38,6 +38,8 @@ pub struct Media {
     #[sqlx(default)]
     pub stream_url: Option<String>,
     pub media_info: Option<String>, // JSON string of MediaInfo
+    // Note: book-specific fields (page_count, reading_mode) live on the dedicated
+    // `Book` model (src/models/db/book.rs), not here.
 }
 
 // Structures for detailed media info (stored as JSON in media_info)
@@ -54,6 +56,7 @@ pub struct MediaInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VideoStream {
+    pub index: i32,
     pub codec: String,
     pub profile: Option<String>,
     pub width: Option<i32>,

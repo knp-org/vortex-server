@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 use regex::Regex;
 use crate::models::db::library::{Library, LibraryType};
+use crate::services::library_service::LibraryService;
+use std::path::PathBuf;
 use crate::services::metadata::{fetch_metadata, fetch_episodes, get_default_provider};
 use crate::services::transcode::codecs::probe_media; 
 use std::collections::HashMap;
@@ -44,17 +46,11 @@ impl ScanCache {
 }
 
 pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force_refresh: bool) {
-    let libraries = if let Some(id) = target_library_id {
-         sqlx::query_as::<_, Library>("SELECT * FROM libraries WHERE id = ?")
-            .bind(id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or(vec![])
+    let service = LibraryService::new(pool.clone());
+    let libraries: Vec<Library> = if let Some(id) = target_library_id {
+        service.get_by_id(id).await.map(|l| vec![l]).unwrap_or_default()
     } else {
-         sqlx::query_as::<_, Library>("SELECT * FROM libraries")
-            .fetch_all(pool)
-            .await
-            .unwrap_or(vec![])
+        service.get_all().await.unwrap_or_default()
     };
 
     let cache = Arc::new(Mutex::new(ScanCache::new()));
@@ -63,25 +59,36 @@ use futures::{StreamExt, stream};
 
     for library in libraries {
         tracing::info!(library = %library.name, library_type = ?library.library_type, "Scanning library");
-        
-        let mut paths = Vec::new();
-        for entry in WalkDir::new(&library.path) {
-             match entry {
-                Ok(entry) => {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Some(ext) = path.extension() {
-                            let ext_str = ext.to_string_lossy().to_lowercase();
-                            if ["mp4", "mkv", "avi", "mov", "webm", "wmv", "m4v", "mpg", "mpeg", "flv", "ts"].contains(&ext_str.as_str()) {
-                                paths.push(path.to_path_buf());
+
+        let is_books = library.library_type == LibraryType::Books;
+
+        // Each entry is (file path, owning root path) so TV parsing can strip the
+        // correct root when a library spans multiple folders.
+        let mut paths: Vec<(PathBuf, String)> = Vec::new();
+        for root in &library.paths {
+            for entry in WalkDir::new(root) {
+                 match entry {
+                    Ok(entry) => {
+                        let path = entry.path();
+                        if path.is_file() {
+                            if let Some(ext) = path.extension() {
+                                let ext_str = ext.to_string_lossy().to_lowercase();
+                                let matches = if is_books {
+                                    crate::services::books::BOOK_EXTENSIONS.contains(&ext_str.as_str())
+                                } else {
+                                    ["mp4", "mkv", "avi", "mov", "webm", "wmv", "m4v", "mpg", "mpeg", "flv", "ts"].contains(&ext_str.as_str())
+                                };
+                                if matches {
+                                    paths.push((path.to_path_buf(), root.clone()));
+                                }
                             }
                         }
-                    }
-                },
-                Err(e) => tracing::warn!(error = %e, "Error scanning entry"),
+                    },
+                    Err(e) => tracing::warn!(error = %e, "Error scanning entry"),
+                }
             }
         }
-        
+
         tracing::info!(file_count = paths.len(), library = %library.name, "Found files, processing with concurrency 4");
 
         let pool_ref = &pool;
@@ -89,8 +96,12 @@ use futures::{StreamExt, stream};
         let lib_ref = &library;
 
         stream::iter(paths)
-            .for_each_concurrent(4, |path| async move {
-                process_video(pool_ref, &path, lib_ref, force_refresh, cache_ref.clone()).await;
+            .for_each_concurrent(4, |(path, root)| async move {
+                if is_books {
+                    process_book(pool_ref, &path, lib_ref).await;
+                } else {
+                    process_video(pool_ref, &path, &root, lib_ref, force_refresh, cache_ref.clone()).await;
+                }
             })
             .await;
     }
@@ -165,12 +176,38 @@ fn parse_episode_number(filename: &str) -> Option<i32> {
     None
 }
 
-async fn process_video(pool: &SqlitePool, path: &Path, library: &Library, force_refresh: bool, cache: Arc<Mutex<ScanCache>>) {
+/// Ingest a single book file (pdf/cbz/epub). Books carry no external metadata for
+/// now: the title comes from the filename, and CBZ archives get a page count so the
+/// reader can paginate. PDF/EPUB page counts are determined client-side.
+async fn process_book(pool: &SqlitePool, path: &Path, library: &Library) {
+    let path_str = path.to_string_lossy().to_string();
+    let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
+
+    let page_count: Option<i64> = match crate::services::books::detect(&path_str) {
+        Some(crate::services::books::BookFormat::Cbz) => {
+            match crate::services::books::cbz_page_count(&path_str).await {
+                Ok(n) => Some(n as i64),
+                Err(e) => {
+                    tracing::warn!(file = %file_stem, error = %e, "Failed to count CBZ pages");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
+    let service = crate::services::book_service::BookService::new(pool.clone());
+    if let Err(e) = service.upsert_scanned(&path_str, &file_stem, library.id, page_count).await {
+        tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book");
+    }
+}
+
+async fn process_video(pool: &SqlitePool, path: &Path, root_path: &str, library: &Library, force_refresh: bool, cache: Arc<Mutex<ScanCache>>) {
     let path_str = path.to_string_lossy().to_string();
     let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
     
     let (series_name, season_number, episode_number) = if library.library_type == LibraryType::TvShows {
-        parse_tv_show_info(path, &library.path, &library.name)
+        parse_tv_show_info(path, root_path, &library.name)
             .map(|(s, sn, en)| (Some(s), Some(sn), Some(en)))
             .unwrap_or((None, None, None))
     } else {

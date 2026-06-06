@@ -49,9 +49,9 @@ async fn main() {
         .nest_service("/", serve_dir)
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], cfg.server_port));
-    println!("🚀 Vortex Server listening on http://{}", addr);
-    println!("📡 To connect from other devices, use your machine's local IP address (e.g., http://192.168.x.x:{})", cfg.server_port);
+    let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], cfg.server_port));
+    println!("Vortex Server listening on http://{}", addr);
+    println!("To connect from other devices, use your machine's local IP address (e.g., http://192.168.x.x:{})", cfg.server_port);
     
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

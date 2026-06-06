@@ -86,15 +86,18 @@ pub async fn login(
         .map_err(|e| AppError::Internal(format!("Token creation failed: {}", e)))?;
 
     // Set HTTP-only cookie
-    let mut cookie = tower_cookies::Cookie::new("auth_token", token);
+    let mut cookie = tower_cookies::Cookie::new("auth_token", token.clone());
     cookie.set_http_only(true);
     cookie.set_path("/");
-    cookie.set_same_site(tower_cookies::cookie::SameSite::Strict);
+    cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
     cookie.set_max_age(tower_cookies::cookie::time::Duration::days(1));
     
     cookies.add(cookie);
 
-    Ok(Json(user))
+    let mut user_response = user;
+    user_response.token = Some(token);
+
+    Ok(Json(user_response))
 }
 
 pub async fn logout(cookies: Cookies) -> Result<impl IntoResponse, AppError> {

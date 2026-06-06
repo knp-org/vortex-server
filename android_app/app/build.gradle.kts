@@ -1,4 +1,5 @@
 plugins {
+    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsKotlinAndroid)
     alias(libs.plugins.hiltAndroid)
@@ -11,7 +12,7 @@ android {
 
     defaultConfig {
         applicationId = "org.knp.vortex"
-        minSdk = 24
+        minSdk = 33
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -38,9 +39,7 @@ android {
     buildFeatures {
         compose = true
     }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
+    
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

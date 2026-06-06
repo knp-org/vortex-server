@@ -21,6 +21,10 @@ pub struct AppConfig {
     pub jwt_secret: String,
     /// Transcoding Hardware Acceleration (vaapi, nvenc, qsv, none)
     pub transcoding_hwa: Option<String>,
+    /// HEVC transcoding threshold in minutes (default: 15.0)
+    pub hevc_transcode_threshold_mins: f64,
+    /// Maximum transcode cache size in MB (0 = unlimited, default: 5000)
+    pub max_cache_size_mb: u64,
 }
 
 impl Default for AppConfig {
@@ -29,10 +33,12 @@ impl Default for AppConfig {
             server_port: 3000,
             transcode_dir: PathBuf::from("transcode"),
             hls_segment_time: 2,
-            segment_wait_timeout: 5,
+            segment_wait_timeout: 15,
             clear_cache_on_startup: true,
             jwt_secret: "vortex_quantum_secret_key_default".to_string(),
             transcoding_hwa: None,
+            hevc_transcode_threshold_mins: 15.0,
+            max_cache_size_mb: 5000,
         }
     }
 }
@@ -75,7 +81,13 @@ impl AppConfig {
         if let Ok(hwa) = std::env::var("VORTEX_TRANSCODING_HWA") {
             config.transcoding_hwa = Some(hwa.to_lowercase());
         }
-        
+
+        if let Ok(size) = std::env::var("VORTEX_MAX_CACHE_SIZE_MB") {
+            if let Ok(s) = size.parse() {
+                config.max_cache_size_mb = s;
+            }
+        }
+
         config
     }
 }

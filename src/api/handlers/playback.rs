@@ -182,6 +182,73 @@ pub async fn stream_video(
 }
 
 #[derive(Serialize)]
+pub struct AudioTrack {
+    pub index: i32,
+    pub label: String,
+    pub language: Option<String>,
+    pub codec: String,
+    pub channels: Option<i32>,
+    pub is_default: bool,
+}
+
+pub async fn get_audio_tracks(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<Vec<AudioTrack>>, AppError> {
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&pool)
+        .await?;
+
+    let file_path = match result {
+        Some((path,)) => path,
+        None => return Err(AppError::NotFound("Media not found".to_string())),
+    };
+
+    let probe = crate::services::transcode::codecs::probe_media(&file_path).await?;
+
+    let tracks: Vec<AudioTrack> = probe.media_info.audio.iter().map(|a| {
+        let channel_desc = match a.channels {
+            Some(8) => "7.1",
+            Some(6) => "5.1",
+            Some(2) => "Stereo",
+            Some(1) => "Mono",
+            Some(n) => return AudioTrack {
+                index: a.index,
+                label: format!("{} - {} {}ch",
+                    a.title.as_deref().or(a.language.as_deref()).unwrap_or("Unknown"),
+                    a.codec.to_uppercase(),
+                    n
+                ),
+                language: a.language.clone(),
+                codec: a.codec.clone(),
+                channels: a.channels,
+                is_default: a.default,
+            },
+            None => "Unknown",
+        };
+
+        let label = if let Some(title) = &a.title {
+            format!("{} - {} {}", title, a.codec.to_uppercase(), channel_desc)
+        } else {
+            let lang = a.language.as_deref().unwrap_or("Unknown");
+            format!("{} - {} {}", lang, a.codec.to_uppercase(), channel_desc)
+        };
+
+        AudioTrack {
+            index: a.index,
+            label,
+            language: a.language.clone(),
+            codec: a.codec.clone(),
+            channels: a.channels,
+            is_default: a.default,
+        }
+    }).collect();
+
+    Ok(Json(tracks))
+}
+
+#[derive(Serialize)]
 pub struct SubtitleTrack {
     pub id: String,
     pub label: String,
@@ -200,15 +267,17 @@ pub async fn get_subtitles(
         .await?;
 
     let file_path = match result {
-        Some((path,)) => std::path::PathBuf::from(path),
+        Some((path,)) => path,
         None => return Err(AppError::NotFound("Media not found".to_string())),
     };
 
-    let parent_dir = file_path.parent().ok_or(AppError::Internal("Invalid file path".to_string()))?;
-    let file_stem = file_path.file_stem().ok_or(AppError::Internal("Invalid filename".to_string()))?.to_string_lossy().to_string();
+    let file_path_buf = std::path::PathBuf::from(&file_path);
+    let parent_dir = file_path_buf.parent().ok_or(AppError::Internal("Invalid file path".to_string()))?;
+    let file_stem = file_path_buf.file_stem().ok_or(AppError::Internal("Invalid filename".to_string()))?.to_string_lossy().to_string();
 
     let mut subtitles = Vec::new();
 
+    // 1. External subtitle files (.srt, .vtt)
     if let Ok(mut read_dir) = tokio::fs::read_dir(parent_dir).await {
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
@@ -217,18 +286,11 @@ pub async fn get_subtitles(
                     let ext_str = ext.to_string_lossy().to_lowercase();
                     if ext_str == "srt" || ext_str == "vtt" {
                         let filename = path.file_name().unwrap().to_string_lossy().to_string();
-                        // Check if it belongs to this video
-                        // Logic: 
-                        // 1. Exact match: video.srt
-                        // 2. Language match: video.en.srt, video.eng.srt
-                        
+
                         if filename.starts_with(&file_stem) {
-                            // It's a match!
                             let label = if filename == format!("{}.{}", file_stem, ext_str) {
                                 "Default".to_string()
                             } else {
-                                // Try to extract language code/label from suffix
-                                // e.g., movie.en.srt -> en
                                 let suffix = filename.strip_prefix(&file_stem).unwrap_or("").strip_suffix(&format!(".{}", ext_str)).unwrap_or("");
                                 let clean_suffix = suffix.trim_start_matches('.').trim_end_matches('.');
                                 if clean_suffix.is_empty() {
@@ -237,19 +299,41 @@ pub async fn get_subtitles(
                                     clean_suffix.to_string()
                                 }
                             };
-                            
-                            // Using filename as ID for simplicity
+
                             subtitles.push(SubtitleTrack {
-                                id: filename.clone(),
+                                id: format!("ext:{}", filename),
                                 label,
-                                language: "en".to_string(), // Naive default, real impl would parse code
-                                source: "url".to_string(),
+                                language: "en".to_string(),
+                                source: "external".to_string(),
                                 url: format!("/api/v1/stream/{}/subtitle/{}", id, filename),
                             });
                         }
                     }
                 }
             }
+        }
+    }
+
+    // 2. Embedded subtitle streams (via ffprobe)
+    if let Ok(probe) = crate::services::transcode::codecs::probe_media(&file_path).await {
+        for sub in &probe.media_info.subtitles {
+            let lang = sub.language.as_deref().unwrap_or("und");
+            let label = if let Some(title) = &sub.title {
+                format!("{} ({})", title, lang)
+            } else {
+                let mut l = lang.to_string();
+                if sub.is_forced { l.push_str(" [Forced]"); }
+                if sub.is_default { l.push_str(" [Default]"); }
+                l
+            };
+
+            subtitles.push(SubtitleTrack {
+                id: format!("emb:{}", sub.index),
+                label,
+                language: lang.to_string(),
+                source: "embedded".to_string(),
+                url: format!("/api/v1/stream/{}/subtitle/embedded/{}", id, sub.index),
+            });
         }
     }
 
@@ -274,21 +358,24 @@ pub async fn stream_subtitle(
     let parent_dir = media_path.parent().ok_or(AppError::Internal("Invalid file path".to_string()))?;
     let subtitle_path = parent_dir.join(&filename);
 
-    // Security check: Ensure subtitle is actually in the same directory (prevent traversal if filename has ..)
-    if !subtitle_path.starts_with(parent_dir) {
-         return Err(AppError::BadRequest("Invalid subtitle path".to_string()));
-    }
-    
     if !subtitle_path.exists() {
         return Err(AppError::NotFound("Subtitle not found".to_string()));
     }
 
-    let content = tokio::fs::read_to_string(&subtitle_path).await.map_err(|_| AppError::Internal("Failed to read subtitle".to_string()))?;
-    
-    // Convert to WebVTT if it's an SRT file
+    let canonical_sub = subtitle_path.canonicalize().map_err(|_| AppError::NotFound("Subtitle not found".to_string()))?;
+    let canonical_parent = parent_dir.canonicalize().map_err(|_| AppError::Internal("Invalid file path".to_string()))?;
+    if !canonical_sub.starts_with(&canonical_parent) {
+        return Err(AppError::BadRequest("Invalid subtitle path".to_string()));
+    }
+
+    let bytes = tokio::fs::read(&subtitle_path).await
+        .map_err(|e| AppError::Internal(format!("Failed to read subtitle: {}", e)))?;
+
+    // Handle non-UTF-8 encodings (common with SRT files)
+    let content = String::from_utf8(bytes.clone())
+        .unwrap_or_else(|_| String::from_utf8_lossy(&bytes).into_owned());
+
     let (final_content, mime) = if filename.ends_with(".srt") {
-        // Simple SRT to VTT conversion using Regex to avoid replacing commas in text
-        // Timestamps: 00:00:00,000 -> 00:00:00.000
         let re = regex::Regex::new(r"(\d{2}:\d{2}:\d{2}),(\d{3})").unwrap();
         let vtt_content = format!("WEBVTT\n\n{}", re.replace_all(&content, "$1.$2"));
         (vtt_content, "text/vtt")
@@ -304,10 +391,63 @@ pub async fn stream_subtitle(
     Ok((headers, final_content))
 }
 
+pub async fn stream_embedded_subtitle(
+    Path((id, stream_index)): Path<(i64, i32)>,
+    State(pool): State<SqlitePool>,
+) -> Result<impl IntoResponse, AppError> {
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&pool)
+        .await?;
+
+    let file_path = match result {
+        Some((path,)) => path,
+        None => return Err(AppError::NotFound("Media not found".to_string())),
+    };
+
+    let output = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", &file_path,
+            "-map", &format!("0:{}", stream_index),
+            "-f", "webvtt",
+            "-",
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("FFmpeg error: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!("FFmpeg subtitle extraction failed: {}", stderr)));
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "text/vtt".parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "public, max-age=3600".parse().unwrap());
+
+    Ok((headers, output.stdout))
+}
+
 pub async fn get_thumbnail(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Books: derive the cover from the file itself. CBZ → first page image.
+    // PDF/EPUB covers are rendered client-side, so fall through to a 404 here.
+    if let Some(book) = crate::services::book_service::BookService::new(pool.clone()).get_optional(id).await? {
+        use crate::services::books::{self, BookFormat};
+        if books::detect(&book.file_path) == Some(BookFormat::Cbz) {
+            let (bytes, mime) = books::cbz_page(&book.file_path, 0).await?;
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, mime.parse().unwrap());
+            headers.insert(header::CACHE_CONTROL, "public, max-age=86400".parse().unwrap());
+            return Ok((headers, bytes));
+        }
+        return Err(AppError::NotFound("No cover available".to_string()));
+    }
+
     // 1. Check for cached thumbnail
     let thumb_dir = std::path::Path::new("thumbnails");
     if !thumb_dir.exists() {

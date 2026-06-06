@@ -1,3 +1,5 @@
+pub mod books;
+pub mod book_service;
 pub mod media_service;
 pub mod metadata;
 pub mod scanner;

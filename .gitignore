@@ -31,8 +31,7 @@ Desktop.ini
 .agent/
 
 /thumbnails
+transcode/
 vortex_server.db
 vortex_server.db-shm
 vortex_server.db-wal
-migrations/20250131220000_initial_schema.sql
-migrations/20260201120000_add_media_info.sql

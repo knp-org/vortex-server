@@ -9,6 +9,9 @@ pub struct User {
     pub password_hash: String,
     pub role: String,
     pub created_at: chrono::NaiveDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

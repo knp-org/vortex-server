@@ -15,14 +15,18 @@ use crate::services::library_service::LibraryService;
 #[derive(serde::Deserialize)]
 pub struct CreateLibraryRequest {
     name: String,
-    path: String,
+    paths: Vec<String>,
     library_type: LibraryType,
+    #[serde(default)]
+    default_reading_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 pub struct UpdateLibraryRequest {
     name: String,
-    path: String,
+    paths: Vec<String>,
+    #[serde(default)]
+    default_reading_mode: Option<String>,
 }
 
 pub async fn get_libraries(State(pool): State<SqlitePool>) -> Result<Json<Vec<Library>>, AppError> {
@@ -36,7 +40,7 @@ pub async fn create_library(
     Json(payload): Json<CreateLibraryRequest>,
 ) -> Result<StatusCode, AppError> {
     let service = LibraryService::new(pool);
-    service.create(payload.name, payload.path, payload.library_type).await?;
+    service.create(payload.name, payload.paths, payload.library_type, payload.default_reading_mode).await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -55,7 +59,7 @@ pub async fn update_library(
     Json(payload): Json<UpdateLibraryRequest>,
 ) -> Result<StatusCode, AppError> {
     let service = LibraryService::new(pool);
-    service.update(id, payload.name, payload.path).await?;
+    service.update(id, payload.name, payload.paths, payload.default_reading_mode).await?;
     Ok(StatusCode::OK)
 }
 

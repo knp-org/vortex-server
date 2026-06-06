@@ -1,3 +1,4 @@
+pub mod books;
 pub mod common;
 pub mod library;
 pub mod media;

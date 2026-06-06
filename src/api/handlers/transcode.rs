@@ -6,7 +6,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
 use crate::error::AppError;
@@ -224,14 +223,11 @@ pub async fn update_transcode_settings(
 /// Get stream info for a media file - frontend uses this to decide playback method
 pub async fn get_stream_info(
     Path(id): Path<i64>,
-    State(pool): State<SqlitePool>,
+    State(state): State<crate::api::routes::AppState>,
     Json(profile): Json<crate::services::transcode::codecs::DeviceProfile>,
 ) -> Result<Json<StreamInfo>, AppError> {
-    use crate::services::transcode::TranscodeService;
-    
-    let service = TranscodeService::new(pool);
-    let info = service.get_stream_info(id, Some(profile)).await?;
-    
+    let info = state.transcode.get_stream_info(id, Some(profile)).await?;
+
     Ok(Json(StreamInfo {
         needs_transcode: info.needs_transcode,
         video_codec: info.video_codec,
@@ -243,21 +239,36 @@ pub async fn get_stream_info(
     }))
 }
 
-/// Get HLS master playlist - starts transcoding if not already running
-/// Supports fast seeking via `start` query param (seconds)
+/// Get HLS master playlist — returns a full-duration VOD playlist.
+/// FFmpeg is started on-demand when individual segments are requested.
+/// Includes #EXT-X-START if the user has a saved playback position.
 pub async fn get_hls_playlist(
     Path(id): Path<i64>,
     Query(params): Query<std::collections::HashMap<String, String>>,
-    State(pool): State<SqlitePool>,
+    State(state): State<crate::api::routes::AppState>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::services::transcode::TranscodeService;
-    
-    let service = TranscodeService::new(pool);
-    let transcode_video = params.get("video_transcode").map(|v| v == "true").unwrap_or(false);
-    let transcode_audio = params.get("audio_transcode").map(|v| v == "true").unwrap_or(false);
-    let start_time = params.get("start").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-    
-    let playlist_content = service.get_hls_playlist(id, transcode_video, transcode_audio, start_time).await?;
+    let resume_position: Option<i64> = sqlx::query_scalar(
+        "SELECT position FROM playback_progress WHERE media_id = ?"
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None);
+
+    let start_offset = resume_position
+        .filter(|&p| p > 10)
+        .map(|p| p as f64);
+
+    // Carry the transcode-selecting params onto each segment URI. `start` is
+    // intentionally excluded — resume is expressed via #EXT-X-START in the
+    // playlist, and per-segment `start` values would be meaningless.
+    let segment_query = ["audio_index", "video_transcode", "audio_transcode"]
+        .iter()
+        .filter_map(|key| params.get(*key).map(|val| format!("{}={}", key, val)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let playlist_content = state.transcode.generate_playlist(id, start_offset, &segment_query).await?;
 
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, "application/vnd.apple.mpegurl".parse().unwrap());
@@ -266,24 +277,45 @@ pub async fn get_hls_playlist(
     Ok((headers, playlist_content))
 }
 
-/// Serve HLS segment files
+/// Serve HLS segment files — starts FFmpeg on-demand if the segment doesn't exist yet.
 pub async fn get_hls_segment(
     Path((id, segment)): Path<(i64, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    State(state): State<crate::api::routes::AppState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let segment_path = PathBuf::from("transcode")
-        .join(id.to_string())
-        .join(&segment);
-
-    // Security check - allow fMP4 segments (.m4s, .mp4) and legacy TS
-    if !segment.ends_with(".ts") && !segment.ends_with(".m3u8") 
+    if !segment.ends_with(".ts") && !segment.ends_with(".m3u8")
         && !segment.ends_with(".m4s") && !segment.ends_with(".mp4") {
         return Err(AppError::BadRequest("Invalid segment".to_string()));
     }
 
-    // Wait for segment to be ready (max 5 seconds)
-    let start = std::time::Instant::now();
-    while !segment_path.exists() && start.elapsed().as_secs() < 5 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let cfg = crate::infrastructure::config::config();
+
+    let transcode_video = params.get("video_transcode").map(|v| v == "true").unwrap_or(true);
+    let transcode_audio = params.get("audio_transcode").map(|v| v == "true").unwrap_or(true);
+    let audio_stream_index: Option<usize> = params.get("audio_index").and_then(|v| v.parse().ok());
+
+    let mut profile = crate::services::transcode::codecs::DeviceProfile::default();
+    let cfg_hwa = cfg.transcoding_hwa.as_deref();
+    profile.hardware_acceleration = match cfg_hwa {
+        Some("vaapi") => Some(crate::services::transcode::codecs::HardwareAccelerationType::Vaapi),
+        Some("nvenc") => Some(crate::services::transcode::codecs::HardwareAccelerationType::Nvenc),
+        Some("qsv") => Some(crate::services::transcode::codecs::HardwareAccelerationType::Qsv),
+        _ => None,
+    };
+
+    if segment == "init.mp4" {
+        state.transcode.ensure_init(id, transcode_video, transcode_audio, profile, audio_stream_index).await?;
+    } else if let Some(seg_num) = parse_segment_index(&segment) {
+        state.transcode.ensure_segment(id, seg_num, transcode_video, transcode_audio, profile, audio_stream_index).await?;
+    }
+
+    let base_dir = cfg.transcode_dir.join(id.to_string());
+    let segment_path = base_dir.join(&segment);
+
+    let canonical = segment_path.canonicalize().unwrap_or_default();
+    let canonical_base = base_dir.canonicalize().unwrap_or(base_dir.clone());
+    if !canonical.starts_with(&canonical_base) {
+        return Err(AppError::BadRequest("Invalid segment path".to_string()));
     }
 
     if !segment_path.exists() {
@@ -306,4 +338,11 @@ pub async fn get_hls_segment(
     headers.insert(header::CACHE_CONTROL, "max-age=3600".parse().unwrap());
 
     Ok((headers, content))
+}
+
+fn parse_segment_index(filename: &str) -> Option<usize> {
+    // segment_00900.m4s → 900
+    let stem = filename.split('.').next()?;
+    let num_str = stem.strip_prefix("segment_")?;
+    num_str.parse().ok()
 }
