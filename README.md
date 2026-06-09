@@ -32,7 +32,13 @@ Vortex combines a high-performance Rust backend with a stunning, premium Android
 
 ## Setup
 
-### Server (Rust)
+### Server (Linux - Automated Install)
+You can easily install or update the Vortex Server on any Linux machine (AMD64 or ARM64) by running our automated install script:
+```bash
+curl -sSL https://raw.githubusercontent.com/knp-org/vortex-server/main/install.sh | bash
+```
+
+### Server (Rust - Manual Build)
 1. Install Rust (https://rustup.rs).
 2. Run the server:
    ```bash
@@ -47,3 +53,7 @@ Vortex combines a high-performance Rust backend with a stunning, premium Android
 
 ## Contributing
 Feel free to open issues or submit PRs!
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for details.
