@@ -3,6 +3,7 @@ pub mod common;
 pub mod library;
 pub mod media;
 pub mod playback;
+pub mod providers;
 pub mod transcode;
 pub mod images;
 pub mod tv;

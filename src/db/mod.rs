@@ -14,10 +14,13 @@ pub async fn init_db() -> SqlitePool {
 
     let options = SqliteConnectOptions::from_str(database_url)
         .expect("Failed to parse DATABASE_URL")
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(30))
+        .foreign_keys(true);
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(15)
         .connect_with(options)
         .await
         .expect("Failed to connect to database");

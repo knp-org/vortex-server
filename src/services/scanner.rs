@@ -300,7 +300,7 @@ async fn process_video(pool: &SqlitePool, path: &Path, root_path: &str, library:
                         cached.clone()
                     } else {
                         drop(c); // Unlock
-                        let fetched = fetch_episodes(&id_str, sn, pool).await.ok();
+                        let fetched = fetch_episodes(&id_str, sn, pool, None).await.ok();
                         let mut c = cache.lock().await;
                         c.season_episodes.insert((id_str.clone(), sn), fetched.clone());
                         fetched

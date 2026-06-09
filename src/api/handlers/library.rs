@@ -11,6 +11,7 @@ use super::common::{ListDirectoriesRequest, DirectoryEntry};
 use std::path::Path as StdPath;
 
 use crate::services::library_service::LibraryService;
+use crate::models::db::provider::LibraryProvider;
 
 #[derive(serde::Deserialize)]
 pub struct CreateLibraryRequest {
@@ -157,4 +158,60 @@ pub async fn browse_library(
     let entries = service.browse(id, query.path).await?;
     Ok(Json(entries))
 }
+
+#[derive(serde::Deserialize)]
+pub struct UpdateLibraryProvidersRequest {
+    pub providers: Vec<LibraryProviderInput>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct LibraryProviderInput {
+    pub provider_id: String,
+    pub priority: i32,
+    pub enabled: bool,
+}
+
+pub async fn get_library_providers(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<Vec<LibraryProvider>>, AppError> {
+    let providers: Vec<LibraryProvider> = sqlx::query_as(
+        "SELECT library_id, provider_id, priority, enabled FROM library_providers WHERE library_id = ? ORDER BY priority ASC"
+    )
+    .bind(id)
+    .fetch_all(&pool)
+    .await?;
+
+    Ok(Json(providers))
+}
+
+pub async fn update_library_providers(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+    Json(payload): Json<UpdateLibraryProvidersRequest>,
+) -> Result<StatusCode, AppError> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM library_providers WHERE library_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    for p in payload.providers {
+        sqlx::query(
+            "INSERT INTO library_providers (library_id, provider_id, priority, enabled) VALUES (?, ?, ?, ?)"
+        )
+        .bind(id)
+        .bind(p.provider_id)
+        .bind(p.priority)
+        .bind(p.enabled)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(StatusCode::OK)
+}
+
 

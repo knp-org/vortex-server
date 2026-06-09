@@ -57,25 +57,35 @@ pub async fn refresh_media_metadata(
         .ok_or_else(|| AppError::NotFound(format!("Media with id {} not found", id)))?;
 
     // Try to get provider ID to fetch exact match
-    let provider_name = get_default_provider(&pool).await;
-    let provider_id = media.provider_ids.as_ref()
-        .and_then(|json_str| serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(json_str).ok())
-        .and_then(|ids| ids.get(&provider_name).cloned())
-        .and_then(|v| {
-            if let Some(s) = v.as_str() {
-                Some(s.to_string())
-            } else if let Some(i) = v.as_i64() {
-                Some(i.to_string())
-            } else {
-                None
+    let mut selected_provider_name = get_default_provider(&pool).await;
+    let mut selected_provider_id = None;
+
+    if let Some(json_str) = media.provider_ids.as_ref() {
+        if let Ok(ids) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(json_str) {
+            if let Some(v) = ids.get(&selected_provider_name) {
+                selected_provider_id = Some(v.clone());
+            } else if let Some((p_name, v)) = ids.iter().next() {
+                selected_provider_name = p_name.clone();
+                selected_provider_id = Some(v.clone());
             }
-        });
+        }
+    }
+
+    let provider_id = selected_provider_id.and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(i) = v.as_i64() {
+            Some(i.to_string())
+        } else {
+            None
+        }
+    });
 
     let type_hint = if media.series_name.is_some() { Some("series") } else { Some("movie") };
 
     let meta = if let Some(id_str) = provider_id {
-        tracing::info!("Refreshing metadata using ID: {}", id_str);
-        fetch_by_id(&id_str, type_hint, &pool).await
+        tracing::info!("Refreshing metadata using ID: {} from provider: {}", id_str, selected_provider_name);
+        fetch_by_id(&id_str, type_hint, &pool, Some(&selected_provider_name)).await
             .map_err(|e| AppError::External(format!("Failed to fetch metadata by ID: {}", e)))?
     } else {
         let title_to_search = if let Some(t) = &media.title {
@@ -110,10 +120,10 @@ pub async fn search_handler(
     
     // Check if query is a numeric ID
     if let Ok(id) = params.query.trim().parse::<i64>() {
-        let meta = fetch_by_id(&id.to_string(), media_type, &pool).await?;
+        let meta = fetch_by_id(&id.to_string(), media_type, &pool, None).await?;
         Ok(Json(vec![meta]))
     } else {
-        let results = search(&params.query, media_type, &pool).await?;
+        let results = search(&params.query, params.year.clone(), media_type, &pool).await?;
         Ok(Json(results))
     }
 }
@@ -127,7 +137,7 @@ pub async fn identify_media(
     use crate::services::metadata::fetch_by_id;
 
     let media_type = payload.media_type.as_deref();
-    let meta = fetch_by_id(&payload.provider_id, media_type, &pool).await?;
+    let meta = fetch_by_id(&payload.provider_id, media_type, &pool, payload.provider_name.as_deref()).await?;
 
     media_service::update_media_metadata(&pool, id, &meta).await?;
     

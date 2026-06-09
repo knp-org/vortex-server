@@ -18,6 +18,13 @@ use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() {
+    // Handle command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-v" || arg == "-V") {
+        println!("Vortex Server version {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     // Initialize logging
     tracing_subscriber::fmt::init();
 
@@ -49,7 +56,7 @@ async fn main() {
         .nest_service("/", serve_dir)
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], cfg.server_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], cfg.server_port));
     println!("Vortex Server listening on http://{}", addr);
     println!("To connect from other devices, use your machine's local IP address (e.g., http://192.168.x.x:{})", cfg.server_port);
     

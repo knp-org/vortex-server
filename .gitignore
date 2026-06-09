@@ -30,8 +30,18 @@ Desktop.ini
 .gemini/
 .agent/
 
+# Logs and Test scripts
+*.log
+server.log
+test_*.py
+test_*.rs
+
+# Databases
 /thumbnails
 transcode/
-vortex_server.db
-vortex_server.db-shm
-vortex_server.db-wal
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

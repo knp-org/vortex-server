@@ -22,6 +22,7 @@ pub struct AppConfig {
     /// Transcoding Hardware Acceleration (vaapi, nvenc, qsv, none)
     pub transcoding_hwa: Option<String>,
     /// HEVC transcoding threshold in minutes (default: 15.0)
+    #[allow(dead_code)]
     pub hevc_transcode_threshold_mins: f64,
     /// Maximum transcode cache size in MB (0 = unlimited, default: 5000)
     pub max_cache_size_mb: u64,

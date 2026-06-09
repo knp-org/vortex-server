@@ -4,16 +4,17 @@ use axum::{
     middleware,
     extract::FromRef,
 };
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::CorsLayer;
 use sqlx::SqlitePool;
 use crate::api::handlers::{
-    library::{get_libraries, create_library, delete_library, scan_all_libraries, list_directories, browse_library, scan_library, refresh_library},
+    library::{get_libraries, create_library, delete_library, scan_all_libraries, list_directories, browse_library, scan_library, refresh_library, get_library_providers, update_library_providers},
     media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library},
     playback::{stream_video, update_progress, get_continue_watching, get_media_progress, get_subtitles, stream_subtitle, stream_embedded_subtitle, get_audio_tracks, get_thumbnail},
     transcode::{get_stream_info, get_hls_playlist, get_hls_segment},
     images::get_image,
     settings::{get_settings, update_setting},
     tv::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series},
+    providers::{list_providers, get_provider_config, update_provider_config, toggle_provider, reorder_providers, test_provider},
 };
 use crate::api::middleware::auth_middleware;
 use crate::infrastructure::logging::request_logging;
@@ -62,6 +63,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/libraries/:id", axum::routing::delete(delete_library).put(crate::api::handlers::library::update_library))
         .route("/api/v1/libraries/:id/media", get(get_library_media))
         .route("/api/v1/libraries/:id/browse", get(browse_library))
+        .route("/api/v1/libraries/:id/providers", get(get_library_providers).put(update_library_providers))
         .route("/api/v1/media/:id", get(get_media_details))
         // .route("/api/v1/media/:id/thumbnail", get(get_thumbnail)) - Moved to public
         .route("/api/v1/media/:id/refresh", axum::routing::post(refresh_media_metadata))
@@ -92,6 +94,13 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/series/:name/identify", axum::routing::post(identify_series))
         .route("/api/v1/series/:name/season/:num", get(get_season_episodes))
         .route("/api/v1/auth/me", get(crate::api::handlers::auth::me))
+        .route("/api/v1/auth/change_password", axum::routing::post(crate::api::handlers::auth::change_password))
+        // Metadata Provider management routes
+        .route("/api/v1/providers", get(list_providers))
+        .route("/api/v1/providers/order", axum::routing::put(reorder_providers))
+        .route("/api/v1/providers/:id/config", get(get_provider_config).put(update_provider_config))
+        .route("/api/v1/providers/:id/toggle", axum::routing::post(toggle_provider))
+        .route("/api/v1/providers/:id/test", axum::routing::post(test_provider))
         .route_layer(middleware::from_fn(auth_middleware));
 
     let cors = CorsLayer::new()

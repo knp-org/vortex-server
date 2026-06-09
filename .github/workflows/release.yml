@@ -21,16 +21,19 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             asset_name: vortex_server_amd64.deb
+            bin_name: vortex_server_linux_amd64
             use_cross: false
             package_deb: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             asset_name: vortex_server_arm64.deb
+            bin_name: vortex_server_linux_arm64
             use_cross: false
             package_deb: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             asset_name: vortex_server.exe
+            bin_name: vortex_server.exe
             use_cross: false
             package_deb: false
 
@@ -63,15 +66,26 @@ jobs:
           command: deb
           args: --target ${{ matrix.target }} --no-build --output ${{ matrix.asset_name }}
 
+      - name: Rename Linux Binary
+        if: matrix.target != 'x86_64-pc-windows-msvc'
+        run: cp target/${{ matrix.target }}/release/vortex_server ${{ matrix.bin_name }}
+
       - name: Rename Windows Binary
         if: matrix.target == 'x86_64-pc-windows-msvc'
-        run: mv target/${{ matrix.target }}/release/vortex_server.exe ${{ matrix.asset_name }}
+        run: mv target/${{ matrix.target }}/release/vortex_server.exe ${{ matrix.bin_name }}
 
-      - name: Upload Artifact
+      - name: Upload Deb Artifact
+        if: matrix.package_deb
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: ${{ matrix.asset_name }}
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bin_name }}
+          path: ${{ matrix.bin_name }}
 
   create-release:
     needs: build-release
@@ -88,4 +102,6 @@ jobs:
           files: |
             vortex_server_amd64.deb/vortex_server_amd64.deb
             vortex_server_arm64.deb/vortex_server_arm64.deb
+            vortex_server_linux_amd64/vortex_server_linux_amd64
+            vortex_server_linux_arm64/vortex_server_linux_arm64
             vortex_server.exe/vortex_server.exe

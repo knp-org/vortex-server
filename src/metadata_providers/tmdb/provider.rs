@@ -2,6 +2,7 @@
 //!
 //! Fetches metadata from The Movie Database (TMDB) API.
 
+use crate::metadata_providers::manifest::{ProviderManifest, ConfigField, FieldType};
 use crate::metadata_providers::traits::MetadataProvider;
 use crate::models::metadata::{NormalizedMetadata, CastMember, EpisodeMetadata};
 use super::types::{TmdbResponse, TmdbFullResponse, TmdbSeasonResponse};
@@ -27,7 +28,7 @@ impl TmdbProvider {
         }
     }
 
-    /// Fetch API key from database settings
+    /// Fetch API key from database settings (back-compat path)
     pub async fn fetch_api_key(pool: &sqlx::SqlitePool) -> Result<String, AppError> {
         let result: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'tmdb_api_key'")
             .fetch_optional(pool)
@@ -41,6 +42,62 @@ impl TmdbProvider {
             return Err(AppError::BadRequest("TMDB API Key is empty in settings".into()));
         }
         Ok(key)
+    }
+
+    /// Static manifest describing this provider's identity and config schema.
+    pub fn provider_manifest() -> ProviderManifest {
+        ProviderManifest {
+            id: "tmdb",
+            name: "The Movie Database",
+            description: "Fetches movie and TV metadata, artwork, and cast information from TMDB.",
+            media_types: &["movie", "series"],
+            requires_api_key: true,
+            config_schema: vec![
+                ConfigField {
+                    key: "api_key",
+                    label: "API Key",
+                    field_type: FieldType::Secret,
+                    required: true,
+                    default: None,
+                    options: None,
+                },
+                ConfigField {
+                    key: "language",
+                    label: "Language",
+                    field_type: FieldType::Select,
+                    required: false,
+                    default: Some(json!("en")),
+                    options: Some(vec![
+                        ("en", "English"),
+                        ("es", "Spanish"),
+                        ("fr", "French"),
+                        ("de", "German"),
+                        ("ja", "Japanese"),
+                        ("ko", "Korean"),
+                        ("zh", "Chinese"),
+                        ("pt", "Portuguese"),
+                        ("it", "Italian"),
+                        ("ru", "Russian"),
+                        ("hi", "Hindi"),
+                    ]),
+                },
+            ],
+        }
+    }
+
+    /// Build a TmdbProvider from a JSON config object.
+    /// Expected keys: `api_key` (required).
+    pub fn from_config(config: &serde_json::Value) -> Result<Box<dyn MetadataProvider>, AppError> {
+        let api_key = config.get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        if api_key.trim().is_empty() {
+            return Err(AppError::BadRequest("TMDB API Key is required".into()));
+        }
+
+        Ok(Box::new(TmdbProvider::new(api_key)))
     }
 
     /// Build TMDB API URL
@@ -189,16 +246,50 @@ impl TmdbProvider {
 
 #[async_trait]
 impl MetadataProvider for TmdbProvider {
-    async fn search(&self, query: &str) -> Result<Vec<NormalizedMetadata>, AppError> {
+    fn provider_id(&self) -> &'static str {
+        "tmdb"
+    }
+
+    async fn health_check(&self) -> Result<(), AppError> {
+        let url = self.build_url("configuration");
+        let resp = self.client.get(&url)
+            .query(&[("api_key", self.api_key.as_str())])
+            .send().await.map_err(|e| {
+                AppError::External(format!("TMDB connection failed: {}", e))
+            })?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(AppError::AuthError("Invalid TMDB API Key".into()));
+        }
+        if !resp.status().is_success() {
+            return Err(AppError::External(format!("TMDB health check failed: {}", resp.status())));
+        }
+        Ok(())
+    }
+
+    async fn search(&self, query: &str, year: Option<String>) -> Result<Vec<NormalizedMetadata>, AppError> {
         if self.api_key.trim().is_empty() {
             return Err(AppError::BadRequest("TMDB API Key not set".into()));
         }
         
         let url = self.build_url("search/multi"); 
         
-        let resp = self.client.get(&url)
-            .query(&[("api_key", self.api_key.as_str()), ("query", query)])
-            .send().await.map_err(|e| {
+        let mut req = self.client.get(&url)
+            .query(&[("api_key", self.api_key.as_str()), ("query", query)]);
+            
+        if let Some(y) = &year {
+            req = req.query(&[("year", y.as_str()), ("first_air_date_year", y.as_str())]);
+        }
+        
+        tracing::info!(
+            provider = "tmdb",
+            endpoint = "search/multi",
+            search_query = query,
+            year = ?year,
+            "Sending TMDB search API request"
+        );
+        
+        let resp = req.send().await.map_err(|e| {
                 tracing::error!("Failed to send TMDB search request: {}", e);
                 AppError::External(e.to_string())
             })?;

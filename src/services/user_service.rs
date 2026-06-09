@@ -60,4 +60,12 @@ impl UserService {
             .await
             .map_err(AppError::from)
     }
+    pub async fn update_password(&self, username: &str, password_hash: &str) -> Result<(), AppError> {
+        sqlx::query("UPDATE users SET password_hash = ? WHERE username = ?")
+            .bind(password_hash)
+            .bind(username)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }

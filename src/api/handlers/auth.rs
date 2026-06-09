@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
 use crate::error::AppError;
 use crate::services::user_service::UserService;
-use crate::models::user::{CreateUser, User};
+use crate::models::user::{CreateUser, User, ChangePasswordRequest};
 
 // JWT Secret - In production this should be an env var
 use crate::infrastructure::config;
@@ -130,4 +130,42 @@ pub async fn me(
      } else {
          Err(AppError::AuthError("Not logged in".to_string()))
      }
+}
+
+pub async fn change_password(
+    State(pool): State<SqlitePool>,
+    cookies: Cookies,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let token = cookies.get("auth_token").map(|c| c.value().to_string());
+    let token = token.ok_or_else(|| AppError::AuthError("Not logged in".to_string()))?;
+
+    let token_data = jsonwebtoken::decode::<Claims>(
+        &token,
+        &jsonwebtoken::DecodingKey::from_secret(config().jwt_secret.as_bytes()),
+        &jsonwebtoken::Validation::default(),
+    ).map_err(|_| AppError::AuthError("Invalid token".to_string()))?;
+
+    let service = UserService::new(pool);
+    let user = service.get_by_username(&token_data.claims.sub).await?
+        .ok_or(AppError::NotFound("User not found".to_string()))?;
+
+    // Verify current password
+    let parsed_hash = PasswordHash::new(&user.password_hash)
+        .map_err(|e| AppError::Internal(format!("Invalid hash: {}", e)))?;
+
+    Argon2::default()
+        .verify_password(payload.current_password.as_bytes(), &parsed_hash)
+        .map_err(|_| AppError::AuthError("Invalid current password".to_string()))?;
+
+    // Hash new password
+    let salt = SaltString::generate(&mut OsRng);
+    let new_password_hash = Argon2::default()
+        .hash_password(payload.new_password.as_bytes(), &salt)
+        .map_err(|e| AppError::Internal(format!("Hashing failed: {}", e)))?
+        .to_string();
+
+    service.update_password(&user.username, &new_password_hash).await?;
+
+    Ok(StatusCode::OK)
 }

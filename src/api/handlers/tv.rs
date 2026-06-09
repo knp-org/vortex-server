@@ -170,6 +170,8 @@ pub async fn refresh_series_metadata(
 
     // Check DB for existing provider_id
     let mut provider_id_to_use = None;
+    let mut selected_provider_name = get_default_provider(&pool).await;
+
     let existing: Option<(Option<String>,)> = sqlx::query_as(
         "SELECT provider_ids FROM media WHERE series_name = ? LIMIT 1"
     )
@@ -179,8 +181,11 @@ pub async fn refresh_series_metadata(
 
     if let Some((Some(json_str),)) = existing {
         if let Ok(ids) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&json_str) {
-            let provider_name = get_default_provider(&pool).await;
-             if let Some(v) = ids.get(&provider_name) {
+            if let Some(v) = ids.get(&selected_provider_name) {
+                 if let Some(s) = v.as_str() { provider_id_to_use = Some(s.to_string()); }
+                 else if let Some(i) = v.as_i64() { provider_id_to_use = Some(i.to_string()); }
+            } else if let Some((p_name, v)) = ids.iter().next() {
+                 selected_provider_name = p_name.clone();
                  if let Some(s) = v.as_str() { provider_id_to_use = Some(s.to_string()); }
                  else if let Some(i) = v.as_i64() { provider_id_to_use = Some(i.to_string()); }
             }
@@ -188,8 +193,8 @@ pub async fn refresh_series_metadata(
     }
 
     let meta = if let Some(id) = provider_id_to_use {
-        tracing::info!("Refreshing series using ID: {}", id);
-        fetch_by_id(&id, Some("series"), &pool).await
+        tracing::info!("Refreshing series using ID: {} from provider: {}", id, selected_provider_name);
+        fetch_by_id(&id, Some("series"), &pool, Some(&selected_provider_name)).await
             .map_err(|e| AppError::External(format!("Failed to fetch metadata by ID: {}", e)))?
     } else {
         fetch_metadata(&series_name, Some("series"), &pool).await
@@ -199,9 +204,8 @@ pub async fn refresh_series_metadata(
     media_service::update_series_metadata(&pool, &series_name, &meta).await?;
     
     // Get the provider name to look up the correct ID
-    let provider_name = get_default_provider(&pool).await;
     let provider_id = meta.provider_ids.as_ref()
-        .and_then(|ids| ids.get(&provider_name))
+        .and_then(|ids| ids.get(&selected_provider_name))
         .and_then(|v| {
             // Handle both string and number types
             if let Some(s) = v.as_str() {
@@ -217,7 +221,7 @@ pub async fn refresh_series_metadata(
         let seasons = media_service::get_series_seasons(&pool, &series_name).await?;
         
         for season_num in seasons {
-            if let Ok(episodes) = fetch_episodes(&id_str, season_num, &pool).await {
+            if let Ok(episodes) = fetch_episodes(&id_str, season_num, &pool, None).await {
                 for ep in episodes {
                     let still_url = ep.still_path.clone();
                     let _ = media_service::update_episode_details(
@@ -250,7 +254,7 @@ pub async fn identify_series(
         .into_owned();
 
     let media_type = payload.media_type.as_deref().or(Some("series"));
-    let meta = fetch_by_id(&payload.provider_id, media_type, &pool).await
+    let meta = fetch_by_id(&payload.provider_id, media_type, &pool, payload.provider_name.as_deref()).await
         .map_err(|e| AppError::External(format!("Failed to fetch metadata: {}", e)))?;
 
     media_service::update_series_metadata(&pool, &series_name, &meta).await?;
@@ -260,7 +264,7 @@ pub async fn identify_series(
     let seasons = media_service::get_series_seasons(&pool, &series_name).await?;
 
     for season_num in seasons {
-        if let Ok(episodes) = fetch_episodes(&provider_id, season_num, &pool).await {
+        if let Ok(episodes) = fetch_episodes(&provider_id, season_num, &pool, payload.provider_name.as_deref()).await {
             for ep in episodes {
                 let still_url = ep.still_path.clone();
                 let _ = media_service::update_episode_details(

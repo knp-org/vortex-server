@@ -148,7 +148,14 @@ pub async fn stream_video(
 
     match range {
         Some((start, end)) => {
-            let end = end.unwrap_or(file_size - 1);
+            if start >= file_size {
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+                response.headers_mut().insert(header::CONTENT_RANGE, format!("bytes */{}", file_size).parse().unwrap());
+                return Ok(response);
+            }
+            let end = end.unwrap_or(file_size.saturating_sub(1));
+            let end = std::cmp::min(end, file_size - 1);
             let length = end - start + 1;
 
             file.seek(SeekFrom::Start(start)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
