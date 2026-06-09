@@ -50,12 +50,8 @@ else
     exit 1
 fi
 
-# Extract the latest version tag using grep
-LATEST_TAG=$(echo "$RELEASE_DATA" | grep -oP '"tag_name": "\K(.*)(=")')
-if [ -z "$LATEST_TAG" ]; then
-    # Fallback parsing if grep -P is not available
-    LATEST_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | awk -F'"' '{print $4}')
-fi
+# Extract the latest version tag
+LATEST_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | awk -F'"' '{print $4}' || true)
 
 if [ -z "$LATEST_TAG" ]; then
     echo "Error: Could not determine the latest release version from GitHub."
