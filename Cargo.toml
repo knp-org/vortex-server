@@ -1,6 +1,6 @@
 [package]
 name = "vortex_server"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 default-run = "vortex_server"
 
@@ -21,7 +21,7 @@ axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "chrono", "macros"] }
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "chrono", "macros", "runtime-tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "default-tls"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 tracing = "0.1"

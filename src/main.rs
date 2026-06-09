@@ -26,21 +26,11 @@ async fn main() {
     }
 
     if args.iter().any(|arg| arg == "--reset-db") {
-        println!("Resetting database content...");
+        println!("Resetting database by deleting files...");
         
-        // Initialize logging so we can see DB traces
-        tracing_subscriber::fmt::init();
-        
-        let pool = init_db().await;
-        let mut tx = pool.begin().await.expect("Failed to begin transaction");
-        
-        sqlx::query("DELETE FROM playback_progress").execute(&mut *tx).await.expect("Failed to delete playback_progress");
-        sqlx::query("DELETE FROM media").execute(&mut *tx).await.expect("Failed to delete media");
-        sqlx::query("DELETE FROM library_paths").execute(&mut *tx).await.expect("Failed to delete library_paths");
-        sqlx::query("DELETE FROM library_providers").execute(&mut *tx).await.expect("Failed to delete library_providers");
-        sqlx::query("DELETE FROM libraries").execute(&mut *tx).await.expect("Failed to delete libraries");
-        
-        tx.commit().await.expect("Failed to commit transaction");
+        let _ = std::fs::remove_file("vortex_server.db");
+        let _ = std::fs::remove_file("vortex_server.db-shm");
+        let _ = std::fs::remove_file("vortex_server.db-wal");
 
         let cfg = init_config();
         if cfg.transcode_dir.exists() {

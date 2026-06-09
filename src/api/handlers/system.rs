@@ -39,30 +39,33 @@ use crate::error::AppError;
 
 pub async fn clear_database(State(pool): State<SqlitePool>) -> Result<StatusCode, AppError> {
     tracing::warn!("Clearing database content...");
-    let mut tx = pool.begin().await.map_err(|e| AppError::Internal(e.to_string()))?;
     
-    // Clear content tables (child tables first to avoid foreign key issues)
-    sqlx::query("DELETE FROM playback_progress").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete playback_progress: {}", e)))?;
-    sqlx::query("DELETE FROM media").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete media: {}", e)))?;
-    sqlx::query("DELETE FROM library_paths").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete library_paths: {}", e)))?;
-    sqlx::query("DELETE FROM library_providers").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete library_providers: {}", e)))?;
-    sqlx::query("DELETE FROM libraries").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete libraries: {}", e)))?;
-    
-    // Cleanup filesystem
+    // Cleanup filesystem caches first
     let cfg = crate::infrastructure::config::config();
     if cfg.transcode_dir.exists() {
-        let _ = std::fs::remove_dir_all(&cfg.transcode_dir); // Ignore error if fails (might be empty/locked)
+        let _ = std::fs::remove_dir_all(&cfg.transcode_dir); // Ignore error if fails
     }
     
     let thumb_dir = std::path::Path::new("thumbnails");
     if thumb_dir.exists() {
         let _ = std::fs::remove_dir_all(thumb_dir);
     }
+
+    // Close the database pool so we release file locks
+    pool.close().await;
+
+    // Delete the database files directly
+    let _ = std::fs::remove_file("vortex_server.db");
+    let _ = std::fs::remove_file("vortex_server.db-shm");
+    let _ = std::fs::remove_file("vortex_server.db-wal");
+
+    tracing::warn!("Database files deleted. Shutting down server for clean restart...");
     
-    // Note: We deliberately do NOT clear 'users' or 'settings' to avoid locking out the admin.
-    
-    tx.commit().await.map_err(|e| AppError::Internal(e.to_string()))?;
-    
-    tracing::info!("Database content cleared.");
+    // Spawn a thread to exit after the HTTP response is sent
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(0);
+    });
+
     Ok(StatusCode::OK)
 }
