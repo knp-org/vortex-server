@@ -41,10 +41,12 @@ pub async fn clear_database(State(pool): State<SqlitePool>) -> Result<StatusCode
     tracing::warn!("Clearing database content...");
     let mut tx = pool.begin().await.map_err(|e| AppError::Internal(e.to_string()))?;
     
-    // Clear content tables
-    sqlx::query("DELETE FROM playback_progress").execute(&mut *tx).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("DELETE FROM media").execute(&mut *tx).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("DELETE FROM libraries").execute(&mut *tx).await.map_err(|e| AppError::Internal(e.to_string()))?;
+    // Clear content tables (child tables first to avoid foreign key issues)
+    sqlx::query("DELETE FROM playback_progress").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete playback_progress: {}", e)))?;
+    sqlx::query("DELETE FROM media").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete media: {}", e)))?;
+    sqlx::query("DELETE FROM library_paths").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete library_paths: {}", e)))?;
+    sqlx::query("DELETE FROM library_providers").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete library_providers: {}", e)))?;
+    sqlx::query("DELETE FROM libraries").execute(&mut *tx).await.map_err(|e| AppError::Internal(format!("Failed to delete libraries: {}", e)))?;
     
     // Cleanup filesystem
     let cfg = crate::infrastructure::config::config();
