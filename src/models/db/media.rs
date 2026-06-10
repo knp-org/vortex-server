@@ -34,6 +34,7 @@ pub struct Media {
     pub rating: Option<f32>,
     pub cast: Option<String>, // JSON stored as string
     pub director: Option<String>, // JSON or comma separated
+    #[sqlx(default)]
     pub library_type: Option<LibraryType>,
     #[sqlx(default)]
     pub stream_url: Option<String>,
