@@ -30,6 +30,9 @@ struct TranscodeSession {
 pub struct TranscodeService {
     pool: SqlitePool,
     sessions: Arc<DashMap<i64, TranscodeSession>>,
+    // Serializes ensure_init/ensure_segment per media so concurrent seek
+    // requests can't kill/restart each other's FFmpeg session mid-write.
+    locks: Arc<DashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +51,7 @@ impl TranscodeService {
         Self {
             pool,
             sessions: Arc::new(DashMap::new()),
+            locks: Arc::new(DashMap::new()),
         }
     }
 
@@ -112,13 +116,26 @@ impl TranscodeService {
 
         let cfg = config();
         let segment_time = cfg.hls_segment_time as f64;
-        let total_segments = (duration / segment_time).ceil() as usize;
+        let mut total_segments = (duration / segment_time).ceil() as usize;
+
+        // Container metadata duration usually exceeds the last decodable
+        // frame, so a tiny trailing sliver would reference a segment FFmpeg
+        // never emits. Fold it into the previous segment instead.
+        if total_segments > 1 {
+            let last_len = duration - (total_segments - 1) as f64 * segment_time;
+            if last_len < 0.5 {
+                total_segments -= 1;
+            }
+        }
+        let total_segments = total_segments.max(1);
 
         let mut playlist = String::new();
         playlist.push_str("#EXTM3U\n");
         playlist.push_str("#EXT-X-VERSION:7\n");
         playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
-        playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", cfg.hls_segment_time));
+        // +1 covers the folded final segment and keyframe-cut jitter;
+        // TARGETDURATION must be >= the longest EXTINF, rounded up.
+        playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", cfg.hls_segment_time + 1));
         playlist.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
 
         if let Some(offset) = start_offset {
@@ -159,6 +176,9 @@ impl TranscodeService {
         profile: DeviceProfile,
         audio_stream_index: Option<usize>,
     ) -> Result<(), AppError> {
+        let lock = self.media_lock(media_id);
+        let _guard = lock.lock().await;
+
         let cfg = config();
         let segment_path = cfg.transcode_dir
             .join(media_id.to_string())
@@ -175,7 +195,7 @@ impl TranscodeService {
             return Ok(());
         }
 
-        let needs_restart = {
+        let out_of_window = {
             if let Some(session) = self.sessions.get(&media_id) {
                 segment_index < session.start_segment
                     || segment_index > session.start_segment + 50
@@ -183,6 +203,10 @@ impl TranscodeService {
                 true
             }
         };
+        // A dead session can't produce new segments (crash, or EOF before
+        // reaching this index) — restart once instead of waiting on a file
+        // that will never appear.
+        let needs_restart = out_of_window || self.session_exited(media_id);
 
         if needs_restart {
             self.kill_session(media_id).await;
@@ -199,6 +223,19 @@ impl TranscodeService {
         let start = std::time::Instant::now();
         let mut delay = std::time::Duration::from_millis(50);
         while !segment_path.exists() && start.elapsed().as_secs() < timeout {
+            // Segments are finalized via temp_file renames, so once FFmpeg
+            // has exited a missing segment will never appear — fail fast
+            // instead of burning the full timeout.
+            if self.session_exited(media_id) {
+                if segment_path.exists() {
+                    return Ok(());
+                }
+                tracing::warn!(
+                    "FFmpeg for media {} exited without producing segment {}",
+                    media_id, segment_index
+                );
+                return Err(AppError::NotFound("Segment past end of stream".to_string()));
+            }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(std::time::Duration::from_millis(500));
         }
@@ -219,6 +256,9 @@ impl TranscodeService {
         profile: DeviceProfile,
         audio_stream_index: Option<usize>,
     ) -> Result<(), AppError> {
+        let lock = self.media_lock(media_id);
+        let _guard = lock.lock().await;
+
         let cfg = config();
         let init_path = cfg.transcode_dir
             .join(media_id.to_string())
@@ -246,6 +286,10 @@ impl TranscodeService {
         let start = std::time::Instant::now();
         let mut delay = std::time::Duration::from_millis(50);
         while !init_path.exists() && start.elapsed().as_secs() < timeout {
+            if self.session_exited(media_id) && !init_path.exists() {
+                tracing::warn!("FFmpeg for media {} exited without producing init segment", media_id);
+                return Err(AppError::NotFound("Init segment not ready".to_string()));
+            }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(std::time::Duration::from_millis(500));
         }
@@ -255,6 +299,20 @@ impl TranscodeService {
         }
 
         Ok(())
+    }
+
+    fn media_lock(&self, media_id: i64) -> Arc<tokio::sync::Mutex<()>> {
+        self.locks
+            .entry(media_id)
+            .or_default()
+            .clone()
+    }
+
+    /// True if a session exists for this media and its FFmpeg process has exited.
+    fn session_exited(&self, media_id: i64) -> bool {
+        self.sessions
+            .get_mut(&media_id)
+            .map_or(false, |mut s| matches!(s.child.try_wait(), Ok(Some(_))))
     }
 
     async fn kill_session(&self, media_id: i64) {
@@ -272,7 +330,7 @@ impl TranscodeService {
         &self,
         media_id: i64,
         file_path: String,
-        start_time: f64,
+        mut start_time: f64,
         profile: DeviceProfile,
         transcode_video: bool,
         transcode_audio: bool,
@@ -283,6 +341,18 @@ impl TranscodeService {
         generator.prepare().await?;
 
         let segment_time = config().hls_segment_time as f64;
+
+        // Clamp near-end seeks: container duration is metadata and often
+        // exceeds the last decodable frame, so -ss into the final segments
+        // can land past EOF and produce nothing. Back up two segments
+        // (grid-aligned) so the EOF flush still emits the requested numbers.
+        if let Some(duration) = probe.duration_seconds {
+            let latest_start = ((duration - 2.0 * segment_time).max(0.0) / segment_time).floor() * segment_time;
+            if start_time > latest_start {
+                start_time = latest_start;
+            }
+        }
+
         let start_number = (start_time / segment_time).floor() as usize;
 
         let source_bitrate = probe.media_info.bit_rate.unwrap_or(8_000_000);
@@ -292,6 +362,10 @@ impl TranscodeService {
         );
 
         let audio_idx = audio_stream_override.unwrap_or_else(|| probe.audio_stream_index.unwrap_or(0));
+
+        let video_fps = parse_frame_rate(
+            probe.media_info.video.as_ref().and_then(|v| v.frame_rate.as_deref())
+        );
 
         let context = TranscodingContext {
             hwa_type: profile.hardware_acceleration.unwrap_or_default(),
@@ -304,20 +378,24 @@ impl TranscodeService {
             start_number,
             is_video_transcode: transcode_video,
             is_audio_transcode: transcode_audio,
+            video_fps,
         };
 
-        let child = generator.start(context).await?;
+        let mut child = generator.start(context).await?;
+
+        if !generator.wait_for_ready(&mut child).await {
+            let _ = child.kill().await;
+            let session_dir = config().transcode_dir.join(media_id.to_string());
+            let _ = tokio::fs::remove_dir_all(&session_dir).await;
+            return Err(AppError::Internal("FFmpeg failed to produce playlist in time".to_string()));
+        }
+
         self.sessions.insert(media_id, TranscodeSession {
             child,
             started_at: Instant::now(),
             start_segment: start_number,
             audio_stream_index: audio_idx,
         });
-
-        if !generator.wait_for_ready().await {
-            self.kill_session(media_id).await;
-            return Err(AppError::Internal("FFmpeg failed to produce playlist in time".to_string()));
-        }
 
         Ok(())
     }
@@ -446,6 +524,25 @@ impl TranscodeService {
             self.kill_session(id).await;
         }
     }
+}
+
+/// Parse ffprobe's `r_frame_rate` (e.g. "24000/1001" or "25") into fps.
+/// Falls back to 24.0 when missing or malformed.
+fn parse_frame_rate(rate: Option<&str>) -> f64 {
+    rate.and_then(|r| {
+        let mut parts = r.splitn(2, '/');
+        let num: f64 = parts.next()?.trim().parse().ok()?;
+        let den: f64 = match parts.next() {
+            Some(d) => d.trim().parse().ok()?,
+            None => 1.0,
+        };
+        if num > 0.0 && den > 0.0 {
+            Some(num / den)
+        } else {
+            None
+        }
+    })
+    .unwrap_or(24.0)
 }
 
 async fn dir_size(path: &std::path::Path) -> u64 {

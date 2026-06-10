@@ -80,13 +80,25 @@ impl HlsGenerator {
         Ok(child)
     }
 
-    pub async fn wait_for_ready(&self) -> bool {
+    pub async fn wait_for_ready(&self, child: &mut tokio::process::Child) -> bool {
         let cfg = config();
         let start = std::time::Instant::now();
 
         while start.elapsed().as_secs() < cfg.segment_wait_timeout as u64 {
             if self.playlist_path().exists() && self.init_path().exists() {
                 return true;
+            }
+            // FFmpeg exiting without the playlist (e.g. -ss past the last
+            // frame) means it will never appear — fail fast.
+            if let Ok(Some(status)) = child.try_wait() {
+                let ready = self.playlist_path().exists() && self.init_path().exists();
+                if !ready {
+                    tracing::warn!(
+                        "FFmpeg for media {} exited ({}) before producing playlist",
+                        self.media_id, status
+                    );
+                }
+                return ready;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }

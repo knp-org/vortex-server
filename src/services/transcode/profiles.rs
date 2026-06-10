@@ -14,6 +14,7 @@ pub struct TranscodingContext {
     pub start_number: usize,
     pub is_video_transcode: bool,
     pub is_audio_transcode: bool,
+    pub video_fps: f64,
 }
 
 pub struct TranscodeProfile;
@@ -28,7 +29,8 @@ impl TranscodeProfile {
     ) -> Vec<String> {
         let cfg = config();
         let segment_time = cfg.hls_segment_time.to_string();
-        let keyint = (cfg.hls_segment_time * 24).to_string();
+        let fps = if context.video_fps > 0.0 { context.video_fps } else { 24.0 };
+        let keyint = ((cfg.hls_segment_time as f64 * fps).round().max(1.0) as i64).to_string();
 
         let mut args = vec![
             "-hide_banner".into(),
@@ -137,6 +139,14 @@ impl TranscodeProfile {
                     ]);
                 }
             }
+
+            // Force keyframes exactly on the segment grid so FFmpeg's cut
+            // points match the uniform playlist regardless of source fps —
+            // -g alone drifts and the muxer only cuts on keyframes.
+            args.extend(vec![
+                "-force_key_frames".into(),
+                format!("expr:gte(t,n_forced*{})", cfg.hls_segment_time),
+            ]);
         } else {
             args.extend(vec!["-c:v".into(), "copy".into()]);
         }
