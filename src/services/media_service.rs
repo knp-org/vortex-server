@@ -26,7 +26,7 @@ pub async fn update_media_metadata(
     sqlx::query("
         UPDATE media 
         SET title = ?, year = ?, plot = ?, poster_url = ?, backdrop_url = ?, 
-            media_type = ?, provider_ids = ?, genres = ?, runtime = ?, rating = ?, cast = ?, director = ?
+            media_type = ?, provider_ids = ?, genres = ?, runtime = ?, rating = ?, cast = ?, director = ?, age_rating = ?, studio = ?, trailer_url = ?, origin_country = ?, collection_name = ?, creator = ?, tags = ?
         WHERE id = ?
     ")
     .bind(&meta.title)
@@ -41,6 +41,13 @@ pub async fn update_media_metadata(
     .bind(meta.rating) // Add rating
     .bind(cast_json) // Add cast_json
     .bind(director_str) // Add director as comma-separated string
+    .bind(&meta.age_rating)
+    .bind(&meta.studio)
+    .bind(&meta.trailer_url)
+    .bind(&meta.origin_country)
+    .bind(&meta.collection_name)
+    .bind(meta.creator.as_ref().map(|c| c.join(", ")))
+    .bind(meta.tags.as_ref().map(|t| t.join(", ")))
     .bind(id)
     .execute(pool)
     .await?;
@@ -65,7 +72,7 @@ pub async fn update_series_metadata(
     let director_str = meta.director.as_ref().map(|d| d.join(", "));
 
     sqlx::query(
-        "UPDATE media SET poster_url = ?, backdrop_url = ?, plot = ?, year = ?, genres = ?, provider_ids = ?, cast = ?, director = ?, rating = ? WHERE series_name = ?"
+        "UPDATE media SET poster_url = ?, backdrop_url = ?, plot = ?, year = ?, genres = ?, provider_ids = ?, cast = ?, director = ?, rating = ?, age_rating = ?, studio = ?, trailer_url = ?, origin_country = ?, collection_name = ?, creator = ?, tags = ? WHERE series_name = ?"
     )
     .bind(&meta.poster_url)
     .bind(&meta.backdrop_url)
@@ -76,6 +83,13 @@ pub async fn update_series_metadata(
     .bind(cast_json)
     .bind(director_str)
     .bind(meta.rating)
+    .bind(&meta.age_rating)
+    .bind(&meta.studio)
+    .bind(&meta.trailer_url)
+    .bind(&meta.origin_country)
+    .bind(&meta.collection_name)
+    .bind(meta.creator.as_ref().map(|c| c.join(", ")))
+    .bind(meta.tags.as_ref().map(|t| t.join(", ")))
     .bind(series_name)
     .execute(pool)
     .await?;
@@ -164,7 +178,14 @@ pub async fn get_recently_added(pool: &SqlitePool) -> Result<Vec<crate::models::
             media.rating,
             media.cast,
             media.director,
-            media.media_info
+            media.media_info,
+            media.age_rating,
+            media.studio,
+            media.trailer_url,
+            media.origin_country,
+            media.collection_name,
+            media.creator,
+            media.tags
         FROM media
         JOIN libraries l ON media.library_id = l.id
         WHERE l.library_type != 'other'
@@ -187,6 +208,7 @@ pub async fn get_details(pool: &SqlitePool, id: i64) -> Result<crate::models::db
             m.id, m.library_id, m.file_path, m.title, m.year, m.poster_url, m.plot, m.media_type, 
             m.added_at, m.series_name, m.season_number, m.episode_number, m.provider_ids, 
             m.backdrop_url, m.still_url, m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+            m.age_rating, m.studio, m.trailer_url, m.origin_country, m.collection_name, m.creator, m.tags,
             l.library_type, 
             ('/api/v1/stream/' || m.id) as stream_url 
         FROM media m 

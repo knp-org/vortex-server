@@ -41,6 +41,63 @@ pub struct TmdbFullResponse {
     pub created_by: Option<Vec<TmdbCreator>>,
     pub credits: Option<TmdbCredits>,
     pub aggregate_credits: Option<TmdbAggregateCredits>, // For TV shows
+    pub production_companies: Option<Vec<TmdbCompany>>,
+    pub networks: Option<Vec<TmdbCompany>>,
+    pub belongs_to_collection: Option<TmdbCollection>,
+    pub origin_country: Option<Vec<String>>,
+    pub content_ratings: Option<TmdbContentRatings>,
+    pub release_dates: Option<TmdbReleaseDates>,
+    pub videos: Option<TmdbVideos>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbCompany {
+    pub name: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbCollection {
+    pub name: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbVideos {
+    pub results: Vec<TmdbVideo>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbVideo {
+    #[serde(alias = "type")]
+    pub video_type: String,
+    pub key: String,
+    pub site: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbContentRatings {
+    pub results: Vec<TmdbContentRatingResult>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbContentRatingResult {
+    pub iso_3166_1: String,
+    pub rating: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbReleaseDates {
+    pub results: Vec<TmdbReleaseDateResult>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbReleaseDateResult {
+    pub iso_3166_1: String,
+    pub release_dates: Vec<TmdbReleaseDateItem>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TmdbReleaseDateItem {
+    pub certification: String,
 }
 
 #[derive(Deserialize, Debug)]

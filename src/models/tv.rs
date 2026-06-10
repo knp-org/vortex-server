@@ -34,5 +34,12 @@ pub struct SeriesDetailDto {
     pub genres: Option<String>,
     pub cast: Option<String>,
     pub director: Option<String>,
+    pub age_rating: Option<String>,
+    pub studio: Option<String>,
+    pub trailer_url: Option<String>,
+    pub origin_country: Option<String>,
+    pub collection_name: Option<String>,
+    pub creator: Option<String>,
+    pub tags: Option<String>,
     pub seasons: Vec<SeasonDto>,
 }

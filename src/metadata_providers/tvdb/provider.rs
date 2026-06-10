@@ -280,6 +280,13 @@ impl MetadataProvider for TvdbProvider {
                     revenue: None,
                     homepage: None,
                     imdb_id: None,
+                    age_rating: None,
+                    studio: None,
+                    trailer_url: None,
+                    origin_country: None,
+                    collection_name: None,
+                    creator: None,
+                    tags: None,
                 });
             }
         }
@@ -342,6 +349,49 @@ impl MetadataProvider for TvdbProvider {
         let poster_url = self.download_image(result.data.image).await;
         let backdrop_url = self.download_image(backdrop_url).await;
 
+        let mut age_rating = None;
+        if let Some(ratings) = &result.data.content_ratings {
+            for r in ratings {
+                if r.country == "usa" || r.country == "USA" {
+                    age_rating = Some(r.name.clone());
+                    break;
+                }
+            }
+            if age_rating.is_none() {
+                if let Some(r) = ratings.first() {
+                    age_rating = Some(r.name.clone());
+                }
+            }
+        }
+
+        let mut studio = None;
+        if let Some(companies) = &result.data.companies {
+            if let Some(c) = companies.first() {
+                studio = Some(c.name.clone());
+            }
+        }
+
+        let mut trailer_url = None;
+        if let Some(trailers) = &result.data.trailers {
+            for t in trailers {
+                if t.language == "eng" {
+                    trailer_url = Some(t.url.clone());
+                    break;
+                }
+            }
+        }
+
+        let mut tags_list = None;
+        if let Some(tags) = &result.data.tags {
+            let mut t_vec = Vec::new();
+            for t in tags {
+                t_vec.push(t.name.clone());
+            }
+            if !t_vec.is_empty() {
+                tags_list = Some(t_vec);
+            }
+        }
+
         Ok(NormalizedMetadata {
             title,
             year: result.data.first_aired.and_then(|s| s.split('-').next().map(|y| y.to_string())),
@@ -350,7 +400,7 @@ impl MetadataProvider for TvdbProvider {
             backdrop_url,
             media_type: media_type.map(|s| s.to_string()),
             provider_ids: Some(serde_json::Value::Object(provider_ids)),
-            genres: None,
+            genres: result.data.genres.map(|gs| gs.into_iter().map(|g| g.name).collect()),
             runtime: None,
             rating: None,
             cast,
@@ -363,6 +413,13 @@ impl MetadataProvider for TvdbProvider {
             revenue: None,
             homepage: None,
             imdb_id: None,
+            age_rating,
+            studio,
+            trailer_url,
+            origin_country: None,
+            collection_name: None,
+            creator: None,
+            tags: tags_list,
         })
     }
 

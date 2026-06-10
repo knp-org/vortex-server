@@ -38,6 +38,23 @@ pub struct Media {
     #[sqlx(default)]
     pub stream_url: Option<String>,
     pub media_info: Option<String>, // JSON string of MediaInfo
+    
+    // Extended metadata fields
+    #[sqlx(default)]
+    pub age_rating: Option<String>,
+    #[sqlx(default)]
+    pub studio: Option<String>,
+    #[sqlx(default)]
+    pub trailer_url: Option<String>,
+    #[sqlx(default)]
+    pub origin_country: Option<String>,
+    #[sqlx(default)]
+    pub collection_name: Option<String>,
+    #[sqlx(default)]
+    pub creator: Option<String>,
+    #[sqlx(default)]
+    pub tags: Option<String>,
+
     // Note: book-specific fields (page_count, reading_mode) live on the dedicated
     // `Book` model (src/models/db/book.rs), not here.
 }

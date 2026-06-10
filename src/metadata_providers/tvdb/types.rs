@@ -55,6 +55,40 @@ pub struct TvdbSeriesData {
     pub first_aired: Option<String>,
     pub characters: Option<Vec<TvdbCharacter>>,
     pub artworks: Option<Vec<TvdbArtwork>>,
+    #[serde(rename = "contentRatings")]
+    pub content_ratings: Option<Vec<TvdbContentRating>>,
+    pub companies: Option<Vec<TvdbCompany>>,
+    pub trailers: Option<Vec<TvdbTrailer>>,
+    pub tags: Option<Vec<TvdbTag>>,
+    pub genres: Option<Vec<TvdbGenre>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TvdbGenre {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TvdbContentRating {
+    pub name: String,
+    pub country: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TvdbCompany {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TvdbTrailer {
+    pub name: String,
+    pub url: String,
+    pub language: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TvdbTag {
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]

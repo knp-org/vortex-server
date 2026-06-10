@@ -45,6 +45,7 @@ pub async fn refresh_media_metadata(
             m.id, m.library_id, m.file_path, m.title, m.year, m.poster_url, m.plot, m.media_type, 
             m.added_at, m.series_name, m.season_number, m.episode_number, m.provider_ids, 
             m.backdrop_url, m.still_url, m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+            m.age_rating, m.studio, m.trailer_url, m.origin_country, m.collection_name, m.creator, m.tags,
             l.library_type, 
             ('/api/v1/stream/' || m.id) as stream_url 
         FROM media m 
@@ -162,6 +163,7 @@ pub async fn search_library(
                 NULL as season_number, NULL as episode_number, 
                 m.provider_ids, m.backdrop_url, m.still_url, 
                 m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+                m.age_rating, m.studio, m.trailer_url, m.origin_country, m.collection_name, m.creator, m.tags,
                 l.library_type,
                 ('/api/v1/stream/' || m.id) as stream_url
              FROM media m 
@@ -188,6 +190,7 @@ pub async fn search_library(
                 NULL as season_number, NULL as episode_number, 
                 m.provider_ids, m.backdrop_url, m.still_url, 
                 m.runtime, m.genres, m.rating, m.cast, m.director, m.media_info,
+                m.age_rating, m.studio, m.trailer_url, m.origin_country, m.collection_name, m.creator, m.tags,
                 l.library_type,
                 ('/api/v1/stream/' || m.id) as stream_url
              FROM media m 

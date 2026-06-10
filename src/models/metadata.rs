@@ -22,6 +22,13 @@ pub struct NormalizedMetadata {
     pub revenue: Option<i64>,
     pub homepage: Option<String>,
     pub imdb_id: Option<String>,
+    pub age_rating: Option<String>,
+    pub studio: Option<String>,
+    pub trailer_url: Option<String>,
+    pub origin_country: Option<String>,
+    pub collection_name: Option<String>,
+    pub creator: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

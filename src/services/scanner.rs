@@ -323,16 +323,22 @@ async fn process_video(pool: &SqlitePool, path: &Path, root_path: &str, library:
         let director_str = meta.director.as_ref().map(|d| d.join(", "));
 
         if library.library_type == LibraryType::TvShows {
-            let _ = sqlx::query("UPDATE media SET year = ?, poster_url = ?, plot = ?, media_type = ?, backdrop_url = ?, series_name = ?, provider_ids = ?, title = COALESCE(?, title), still_url = ?, runtime = ?, genres = ?, rating = ?, cast = ?, director = ? WHERE file_path = ?")
+            let _ = sqlx::query("UPDATE media SET year = ?, poster_url = ?, plot = ?, media_type = ?, backdrop_url = ?, series_name = ?, provider_ids = ?, title = COALESCE(?, title), still_url = ?, runtime = ?, genres = ?, rating = ?, cast = ?, director = ?, age_rating = ?, studio = ?, trailer_url = ?, origin_country = ?, collection_name = ?, creator = ?, tags = ? WHERE file_path = ?")
                 .bind(year_int).bind(&meta.poster_url).bind(final_plot).bind(&meta.media_type).bind(&meta.backdrop_url).bind(&meta.title)
                 .bind(meta.provider_ids.as_ref().map(|v| v.to_string())).bind(final_title).bind(final_still).bind(meta.runtime).bind(&genres_str)
-                .bind(meta.rating).bind(&cast_json).bind(&director_str).bind(&path_str)
+                .bind(meta.rating).bind(&cast_json).bind(&director_str)
+                .bind(&meta.age_rating).bind(&meta.studio).bind(&meta.trailer_url).bind(&meta.origin_country).bind(&meta.collection_name)
+                .bind(meta.creator.as_ref().map(|c| c.join(", "))).bind(meta.tags.as_ref().map(|t| t.join(", ")))
+                .bind(&path_str)
                 .execute(pool).await;
         } else {
-            let _ = sqlx::query("UPDATE media SET title = ?, year = ?, poster_url = ?, plot = ?, media_type = ?, backdrop_url = ?, provider_ids = ?, runtime = ?, genres = ?, rating = ?, cast = ?, director = ? WHERE file_path = ?")
+            let _ = sqlx::query("UPDATE media SET title = ?, year = ?, poster_url = ?, plot = ?, media_type = ?, backdrop_url = ?, provider_ids = ?, runtime = ?, genres = ?, rating = ?, cast = ?, director = ?, age_rating = ?, studio = ?, trailer_url = ?, origin_country = ?, collection_name = ?, creator = ?, tags = ? WHERE file_path = ?")
                 .bind(&meta.title).bind(year_int).bind(&meta.poster_url).bind(&meta.plot).bind(&meta.media_type).bind(&meta.backdrop_url)
                 .bind(meta.provider_ids.as_ref().map(|v| v.to_string())).bind(meta.runtime).bind(&genres_str)
-                .bind(meta.rating).bind(&cast_json).bind(&director_str).bind(&path_str)
+                .bind(meta.rating).bind(&cast_json).bind(&director_str)
+                .bind(&meta.age_rating).bind(&meta.studio).bind(&meta.trailer_url).bind(&meta.origin_country).bind(&meta.collection_name)
+                .bind(meta.creator.as_ref().map(|c| c.join(", "))).bind(meta.tags.as_ref().map(|t| t.join(", ")))
+                .bind(&path_str)
                 .execute(pool).await;
         }
         tracing::info!(file = %file_stem, "Updated metadata");

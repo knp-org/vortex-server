@@ -129,6 +129,13 @@ impl TmdbProvider {
             revenue: None,
             homepage: None,
             imdb_id: None,
+            content_ratings: None,
+            release_dates: None,
+            networks: None,
+            production_companies: None,
+            videos: None,
+            origin_country: None,
+            belongs_to_collection: None,
             created_by: None,
             credits: None,
             aggregate_credits: None,
@@ -217,6 +224,69 @@ impl TmdbProvider {
                 }
             }
         }
+        let mut creators_list = Vec::new();
+        if let Some(creators) = &full_info.created_by {
+            for creator in creators {
+                creators_list.push(creator.name.clone());
+            }
+        }
+        let creator = if creators_list.is_empty() { None } else { Some(creators_list) };
+
+        // Process Age Rating
+        let mut age_rating = None;
+        if let Some(content_ratings) = &full_info.content_ratings {
+            for rating in &content_ratings.results {
+                if rating.iso_3166_1 == "US" {
+                    age_rating = Some(rating.rating.clone());
+                    break;
+                }
+            }
+        } else if let Some(release_dates) = &full_info.release_dates {
+            for release in &release_dates.results {
+                if release.iso_3166_1 == "US" {
+                    if let Some(cert) = release.release_dates.first() {
+                        age_rating = Some(cert.certification.clone());
+                    }
+                    break;
+                }
+            }
+        }
+        if age_rating.as_deref() == Some("") {
+            age_rating = None;
+        }
+
+        // Process Studio / Network
+        let mut studio = None;
+        if let Some(networks) = &full_info.networks {
+            if let Some(network) = networks.first() {
+                studio = Some(network.name.clone());
+            }
+        }
+        if studio.is_none() {
+            if let Some(companies) = &full_info.production_companies {
+                if let Some(company) = companies.first() {
+                    studio = Some(company.name.clone());
+                }
+            }
+        }
+
+        // Process Trailer URL
+        let mut trailer_url = None;
+        if let Some(videos) = &full_info.videos {
+            for video in &videos.results {
+                if video.video_type == "Trailer" && video.site == "YouTube" {
+                    trailer_url = Some(format!("https://www.youtube.com/watch?v={}", video.key));
+                    break;
+                }
+            }
+        }
+
+        // Origin Country
+        let origin_country = full_info.origin_country.as_ref().and_then(|c| c.first().cloned());
+
+        // Collection Name
+        let collection_name = full_info.belongs_to_collection.as_ref().map(|c| c.name.clone());
+
         let director = if directors.is_empty() { None } else { Some(directors) };
 
         Ok(NormalizedMetadata {
@@ -240,6 +310,13 @@ impl TmdbProvider {
             revenue: full_info.revenue,
             homepage: full_info.homepage,
             imdb_id: full_info.imdb_id,
+            age_rating,
+            studio,
+            trailer_url,
+            origin_country,
+            collection_name,
+            creator,
+            tags: None,
         })
     }
 }
@@ -351,6 +428,13 @@ impl MetadataProvider for TmdbProvider {
                 revenue: None,
                 homepage: None,
                 imdb_id: None,
+                age_rating: None,
+                studio: None,
+                trailer_url: None,
+                origin_country: None,
+                collection_name: None,
+                creator: None,
+                tags: None,
             });
         }
         Ok(results)

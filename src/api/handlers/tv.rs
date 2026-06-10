@@ -112,8 +112,8 @@ pub async fn get_series_detail(
     
     tracing::info!("Fetching details for series: '{}'", series_name);
 
-    let series_info: Option<(Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT poster_url, backdrop_url, plot, year, genres, \"cast\", director FROM media WHERE series_name = ? AND poster_url IS NOT NULL LIMIT 1"
+    let series_info: Option<(Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT poster_url, backdrop_url, plot, year, genres, \"cast\", director, age_rating, studio, trailer_url, origin_country, collection_name, creator, tags FROM media WHERE series_name = ? AND poster_url IS NOT NULL LIMIT 1"
     )
     .bind(&series_name)
     .fetch_optional(&pool)
@@ -143,7 +143,7 @@ pub async fn get_series_detail(
         })
         .collect();
 
-    let (poster_url, backdrop_url, plot, year, genres, cast, director) = series_info.unwrap_or((None, None, None, None, None, None, None));
+    let (poster_url, backdrop_url, plot, year, genres, cast, director, age_rating, studio, trailer_url, origin_country, collection_name, creator, tags) = series_info.unwrap_or((None, None, None, None, None, None, None, None, None, None, None, None, None, None));
 
     Ok(Json(SeriesDetailDto {
         name: series_name,
@@ -154,6 +154,13 @@ pub async fn get_series_detail(
         genres,
         cast,
         director,
+        age_rating,
+        studio,
+        trailer_url,
+        origin_country,
+        collection_name,
+        creator,
+        tags,
         seasons,
     }))
 }
