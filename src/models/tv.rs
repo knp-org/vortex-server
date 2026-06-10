@@ -22,6 +22,17 @@ pub struct EpisodeDto {
     pub poster_url: Option<String>,
     pub file_path: String,
     pub plot: Option<String>,
+    pub runtime: Option<i32>,
+    pub rating: Option<f32>,
+    pub cast: Option<String>,
+    pub director: Option<String>,
+    pub age_rating: Option<String>,
+    pub studio: Option<String>,
+    pub trailer_url: Option<String>,
+    pub origin_country: Option<String>,
+    pub collection_name: Option<String>,
+    pub creator: Option<String>,
+    pub tags: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

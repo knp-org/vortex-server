@@ -75,8 +75,8 @@ pub async fn get_season_episodes(
         .unwrap_or(std::borrow::Cow::Borrowed(&encoded_name))
         .into_owned();
 
-    let episode_rows: Vec<(i64, Option<String>, Option<i32>, Option<String>, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, title, episode_number, still_url, file_path, plot 
+    let episode_rows: Vec<crate::models::db::media::Media> = sqlx::query_as(
+        "SELECT * 
         FROM media 
         WHERE series_name = ? AND season_number = ?
         ORDER BY episode_number ASC"
@@ -88,13 +88,24 @@ pub async fn get_season_episodes(
 
     let episodes: Vec<EpisodeDto> = episode_rows
         .into_iter()
-        .map(|(id, title, episode_number, still_url, file_path, plot)| EpisodeDto {
-            id,
-            title,
-            episode_number: episode_number.unwrap_or(0),
-            poster_url: still_url,
-            file_path,
-            plot,
+        .map(|media| EpisodeDto {
+            id: media.id,
+            title: media.title,
+            episode_number: media.episode_number.unwrap_or(0),
+            poster_url: media.still_url,
+            file_path: media.file_path,
+            plot: media.plot,
+            runtime: media.runtime,
+            rating: media.rating,
+            cast: media.cast,
+            director: media.director,
+            age_rating: media.age_rating,
+            studio: media.studio,
+            trailer_url: media.trailer_url,
+            origin_country: media.origin_country,
+            collection_name: media.collection_name,
+            creator: media.creator,
+            tags: media.tags,
         })
         .collect();
 
