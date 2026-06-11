@@ -15,6 +15,7 @@ use crate::error::AppError;
 pub struct UpdateProgressRequest {
     position: i64,
     total_duration: i64,
+    reading_style: Option<String>,
 }
 
 #[derive(Debug, FromRow, Serialize, Deserialize, Clone)]
@@ -38,11 +39,12 @@ pub struct MediaWithProgress {
     pub genres: Option<String>,
     pub progress: Option<i64>,
     pub library_type: Option<crate::db::models::LibraryType>,
+    pub reading_style: Option<String>,
 }
 
 pub async fn get_continue_watching(State(pool): State<SqlitePool>) -> Result<Json<Vec<MediaWithProgress>>, AppError> {
     let media = sqlx::query_as::<_, MediaWithProgress>(
-        "SELECT m.*, p.position as progress, l.library_type 
+        "SELECT m.*, p.position as progress, p.reading_style, l.library_type 
          FROM media m
          JOIN playback_progress p ON m.id = p.media_id
          JOIN libraries l ON m.library_id = l.id
@@ -62,18 +64,33 @@ pub async fn update_progress(
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateProgressRequest>,
 ) -> Result<StatusCode, AppError> {
-    sqlx::query(
-        "INSERT INTO playback_progress (media_id, position, total_duration, last_watched) 
-         VALUES (?, ?, ?, CURRENT_TIMESTAMP) 
-         ON CONFLICT(media_id) DO UPDATE SET position = ?, total_duration = ?, last_watched = CURRENT_TIMESTAMP"
-    )
-    .bind(id)
-    .bind(payload.position)
-    .bind(payload.total_duration)
-    .bind(payload.position)
-    .bind(payload.total_duration)
-    .execute(&pool)
-    .await?;
+    let query = if payload.reading_style.is_some() {
+        sqlx::query(
+            "INSERT INTO playback_progress (media_id, position, total_duration, reading_style, last_watched) 
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) 
+             ON CONFLICT(media_id) DO UPDATE SET position = ?, total_duration = ?, reading_style = ?, last_watched = CURRENT_TIMESTAMP"
+        )
+        .bind(id)
+        .bind(payload.position)
+        .bind(payload.total_duration)
+        .bind(&payload.reading_style)
+        .bind(payload.position)
+        .bind(payload.total_duration)
+        .bind(&payload.reading_style)
+    } else {
+        sqlx::query(
+            "INSERT INTO playback_progress (media_id, position, total_duration, last_watched) 
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP) 
+             ON CONFLICT(media_id) DO UPDATE SET position = ?, total_duration = ?, last_watched = CURRENT_TIMESTAMP"
+        )
+        .bind(id)
+        .bind(payload.position)
+        .bind(payload.total_duration)
+        .bind(payload.position)
+        .bind(payload.total_duration)
+    };
+
+    query.execute(&pool).await?;
 
     Ok(StatusCode::OK)
 }
@@ -82,12 +99,17 @@ pub async fn get_media_progress(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let progress: Option<i64> = sqlx::query_scalar("SELECT position FROM playback_progress WHERE media_id = ?")
+    let row: Option<(i64, Option<String>)> = sqlx::query_as("SELECT position, reading_style FROM playback_progress WHERE media_id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await?;
     
-    Ok(Json(serde_json::json!({ "position": progress.unwrap_or(0) })))
+    let (position, style) = row.unwrap_or((0, None));
+    
+    Ok(Json(serde_json::json!({ 
+        "position": position,
+        "reading_style": style
+    })))
 }
 
 pub async fn stream_video(
