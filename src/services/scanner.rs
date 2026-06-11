@@ -98,7 +98,7 @@ use futures::{StreamExt, stream};
         stream::iter(paths)
             .for_each_concurrent(4, |(path, root)| async move {
                 if is_books {
-                    process_book(pool_ref, &path, lib_ref).await;
+                    process_book(pool_ref, &path, &root, lib_ref).await;
                 } else {
                     process_video(pool_ref, &path, &root, lib_ref, force_refresh, cache_ref.clone()).await;
                 }
@@ -179,9 +179,13 @@ fn parse_episode_number(filename: &str) -> Option<i32> {
 /// Ingest a single book file (pdf/cbz/epub). Books carry no external metadata for
 /// now: the title comes from the filename, and CBZ archives get a page count so the
 /// reader can paginate. PDF/EPUB page counts are determined client-side.
-async fn process_book(pool: &SqlitePool, path: &Path, library: &Library) {
+async fn process_book(pool: &SqlitePool, path: &Path, root_path: &str, library: &Library) {
     let path_str = path.to_string_lossy().to_string();
     let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
+
+    let (series_name, season_number, episode_number) = parse_tv_show_info(path, root_path, &library.name)
+        .map(|(s, sn, en)| (Some(s), Some(sn), Some(en)))
+        .unwrap_or((None, None, None));
 
     let page_count: Option<i64> = match crate::services::books::detect(&path_str) {
         Some(crate::services::books::BookFormat::Cbz) => {
@@ -197,7 +201,7 @@ async fn process_book(pool: &SqlitePool, path: &Path, library: &Library) {
     };
 
     let service = crate::services::book_service::BookService::new(pool.clone());
-    if let Err(e) = service.upsert_scanned(&path_str, &file_stem, library.id, page_count).await {
+    if let Err(e) = service.upsert_scanned(&path_str, &file_stem, library.id, page_count, series_name, season_number, episode_number).await {
         tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book");
     }
 }

@@ -97,6 +97,9 @@ impl BookService {
         title: &str,
         library_id: i64,
         page_count: Option<i64>,
+        series_name: Option<String>,
+        season_number: Option<i32>,
+        episode_number: Option<i32>,
     ) -> Result<(), AppError> {
         let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM media WHERE file_path = ?")
             .bind(file_path)
@@ -105,21 +108,27 @@ impl BookService {
 
         if let Some((id,)) = existing {
             sqlx::query(
-                "UPDATE media SET library_id = ?, media_type = 'book', page_count = COALESCE(?, page_count) WHERE id = ?",
+                "UPDATE media SET library_id = ?, media_type = 'book', page_count = COALESCE(?, page_count), series_name = ?, season_number = ?, episode_number = ? WHERE id = ?",
             )
             .bind(library_id)
             .bind(page_count)
+            .bind(&series_name)
+            .bind(season_number)
+            .bind(episode_number)
             .bind(id)
             .execute(&self.pool)
             .await?;
         } else {
             sqlx::query(
-                "INSERT INTO media (file_path, title, library_id, media_type, page_count) VALUES (?, ?, ?, 'book', ?)",
+                "INSERT INTO media (file_path, title, library_id, media_type, page_count, series_name, season_number, episode_number) VALUES (?, ?, ?, 'book', ?, ?, ?, ?)",
             )
             .bind(file_path)
             .bind(title)
             .bind(library_id)
             .bind(page_count)
+            .bind(&series_name)
+            .bind(season_number)
+            .bind(episode_number)
             .execute(&self.pool)
             .await?;
         }
