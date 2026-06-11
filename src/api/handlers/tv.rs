@@ -9,18 +9,42 @@ use crate::services::media_service;
 use crate::api::dtos::requests::IdentifyRequest;
 use crate::models::tv::{SeriesDto, SeasonDto, EpisodeDto, SeriesDetailDto};
 
-pub async fn get_all_series(State(pool): State<SqlitePool>) -> Result<Json<Vec<SeriesDto>>, AppError> {
-    let series_rows: Vec<(String, i32, Option<String>)> = sqlx::query_as(
-        "SELECT media.series_name, COUNT(DISTINCT media.season_number) as season_count, 
-                (SELECT poster_url FROM media m2 WHERE m2.series_name = media.series_name AND m2.poster_url IS NOT NULL LIMIT 1)
-         FROM media 
-         JOIN libraries l ON media.library_id = l.id
-         WHERE media.series_name IS NOT NULL 
-         GROUP BY media.series_name 
-         ORDER BY media.series_name ASC"
-    )
-    .fetch_all(&pool)
-    .await?;
+#[derive(serde::Deserialize)]
+pub struct SeriesQuery {
+    /// When present, only series belonging to this library are returned. This keeps
+    /// TV-show libraries and Books libraries (comics also use `series_name`) from
+    /// leaking into one another.
+    pub library_id: Option<i64>,
+}
+
+pub async fn get_all_series(
+    State(pool): State<SqlitePool>,
+    axum::extract::Query(query): axum::extract::Query<SeriesQuery>,
+) -> Result<Json<Vec<SeriesDto>>, AppError> {
+    let series_rows: Vec<(String, i32, Option<String>)> = match query.library_id {
+        Some(library_id) => sqlx::query_as(
+            "SELECT media.series_name, COUNT(DISTINCT media.season_number) as season_count,
+                    (SELECT poster_url FROM media m2 WHERE m2.series_name = media.series_name AND m2.library_id = media.library_id AND m2.poster_url IS NOT NULL LIMIT 1)
+             FROM media
+             WHERE media.series_name IS NOT NULL AND media.library_id = ?
+             GROUP BY media.series_name
+             ORDER BY media.series_name ASC"
+        )
+        .bind(library_id)
+        .fetch_all(&pool)
+        .await?,
+        None => sqlx::query_as(
+            "SELECT media.series_name, COUNT(DISTINCT media.season_number) as season_count,
+                    (SELECT poster_url FROM media m2 WHERE m2.series_name = media.series_name AND m2.poster_url IS NOT NULL LIMIT 1)
+             FROM media
+             JOIN libraries l ON media.library_id = l.id
+             WHERE media.series_name IS NOT NULL
+             GROUP BY media.series_name
+             ORDER BY media.series_name ASC"
+        )
+        .fetch_all(&pool)
+        .await?,
+    };
 
     let series: Vec<SeriesDto> = series_rows
         .into_iter()

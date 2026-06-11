@@ -166,9 +166,10 @@ pub async fn search_library(
                 m.age_rating, m.studio, m.trailer_url, m.origin_country, m.collection_name, m.creator, m.tags,
                 l.library_type,
                 ('/api/v1/stream/' || m.id) as stream_url
-             FROM media m 
-             JOIN libraries l ON m.library_id = l.id 
+             FROM media m
+             JOIN libraries l ON m.library_id = l.id
              WHERE (m.title LIKE ? OR m.series_name LIKE ? OR m.plot LIKE ?)
+               AND l.library_type != 'other'
              GROUP BY COALESCE(m.series_name, m.id)
              HAVING l.library_type = ?
              ORDER BY title ASC LIMIT 20"
@@ -193,9 +194,10 @@ pub async fn search_library(
                 m.age_rating, m.studio, m.trailer_url, m.origin_country, m.collection_name, m.creator, m.tags,
                 l.library_type,
                 ('/api/v1/stream/' || m.id) as stream_url
-             FROM media m 
-             JOIN libraries l ON m.library_id = l.id 
+             FROM media m
+             JOIN libraries l ON m.library_id = l.id
              WHERE (m.title LIKE ? OR m.series_name LIKE ? OR m.plot LIKE ?)
+               AND l.library_type != 'other'
              GROUP BY COALESCE(m.series_name, m.id)
              ORDER BY title ASC LIMIT 20"
         )
