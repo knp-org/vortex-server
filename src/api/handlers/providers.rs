@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::metadata_providers::manifest::{FieldType, ProviderManifest};
 use crate::metadata_providers::registry;
-use crate::models::db::provider::ProviderConfig;
+use crate::models::db::provider_configs::ProviderConfig;
 
 // ── Response types ─────────────────────────────────────────────────────
 

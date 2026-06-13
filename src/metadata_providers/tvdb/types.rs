@@ -1,4 +1,17 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+
+/// Deserialize a field but tolerate a mismatched shape. TVDB's `movies/{id}/extended`
+/// and `series/{id}/extended` responses differ (e.g. a field that's an array for one
+/// is an object/null for the other); without this, one odd field would fail the whole
+/// parse and 502 the request. On any mismatch we yield `None` instead of erroring.
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(T::deserialize(v).ok())
+}
 
 /// Response from /series/{id}/translations/{lang} or /movies/{id}/translations/{lang}
 #[derive(Debug, Deserialize)]
@@ -45,6 +58,9 @@ pub struct TvdbSeriesResponse {
     pub data: TvdbSeriesData,
 }
 
+// NOTE: every nested field below is tolerant (Option / default). The `movies/{id}/extended`
+// and `series/{id}/extended` responses differ subtly, and TVDB frequently returns null or
+// omits fields; a single strict field would abort the whole parse and 502 the request.
 #[derive(Debug, Deserialize)]
 pub struct TvdbSeriesData {
     pub id: i64,
@@ -53,42 +69,49 @@ pub struct TvdbSeriesData {
     pub image: Option<String>,
     #[serde(rename = "firstAired")]
     pub first_aired: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     pub characters: Option<Vec<TvdbCharacter>>,
+    #[serde(default, deserialize_with = "lenient")]
     pub artworks: Option<Vec<TvdbArtwork>>,
-    #[serde(rename = "contentRatings")]
+    #[serde(rename = "contentRatings", default, deserialize_with = "lenient")]
     pub content_ratings: Option<Vec<TvdbContentRating>>,
+    #[serde(default, deserialize_with = "lenient")]
     pub companies: Option<Vec<TvdbCompany>>,
+    #[serde(default, deserialize_with = "lenient")]
     pub trailers: Option<Vec<TvdbTrailer>>,
+    #[serde(default, deserialize_with = "lenient")]
     pub tags: Option<Vec<TvdbTag>>,
+    #[serde(default, deserialize_with = "lenient")]
     pub genres: Option<Vec<TvdbGenre>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TvdbGenre {
-    pub name: String,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TvdbContentRating {
-    pub name: String,
-    pub country: String,
+    pub name: Option<String>,
+    pub country: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TvdbCompany {
-    pub name: String,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TvdbTrailer {
-    pub name: String,
-    pub url: String,
-    pub language: String,
+    #[allow(dead_code)]
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TvdbTag {
-    pub name: String,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +119,7 @@ pub struct TvdbArtwork {
     #[allow(dead_code)]
     pub id: i64,
     pub image: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub artwork_type: i32,
 }
 

@@ -125,34 +125,15 @@ impl LibraryService {
 
 
     pub async fn delete(&self, id: i64) -> Result<(), AppError> {
-        // Transaction to ensure atomicity
-        let mut tx = self.pool.begin().await.map_err(|e| AppError::Internal(e.to_string()))?;
-
-        // 1. Delete progress
-        sqlx::query("DELETE FROM playback_progress WHERE media_id IN (SELECT id FROM media WHERE library_id = ?)")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        // 2. Delete media
-        sqlx::query("DELETE FROM media WHERE library_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        // 3. Delete library paths
-        sqlx::query("DELETE FROM library_paths WHERE library_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        // 4. Delete library
+        // `media_items`, `series`, `artists`, `albums` and `library_paths` all declare
+        // `ON DELETE CASCADE` on `library_id`, which in turn cascades to the per-type
+        // detail tables, credits/genre links and per-user state. So deleting the
+        // library row tears down everything beneath it (foreign keys are enabled on
+        // the pool connection).
         sqlx::query("DELETE FROM libraries WHERE id = ?")
             .bind(id)
-            .execute(&mut *tx)
+            .execute(&self.pool)
             .await?;
-
-        tx.commit().await.map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(())
     }
 
@@ -243,7 +224,14 @@ impl LibraryService {
             // For safety, we can chunk if needed, but for now assuming folder size < 900 files.
             let placeholders: Vec<String> = file_paths_to_check.iter().map(|_| "?".to_string()).collect();
             let query = format!(
-                "SELECT id, file_path, poster_url FROM media WHERE file_path IN ({}) COLLATE NOCASE",
+                "SELECT mi.id, mi.file_path,
+                        COALESCE(mv.poster_url, e.still_url, b.poster_url, mvd.poster_url) AS poster_url
+                 FROM media_items mi
+                 LEFT JOIN movies mv ON mv.item_id = mi.id
+                 LEFT JOIN episodes e ON e.item_id = mi.id
+                 LEFT JOIN books b ON b.item_id = mi.id
+                 LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
+                 WHERE mi.file_path IN ({}) COLLATE NOCASE",
                 placeholders.join(",")
             );
 

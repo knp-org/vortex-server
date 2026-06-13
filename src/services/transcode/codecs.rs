@@ -5,7 +5,7 @@
 use serde::Deserialize;
 use std::process::Stdio;
 use crate::error::AppError;
-use crate::models::db::media::{MediaInfo, VideoStream, AudioStream, SubtitleStream};
+use crate::models::db::media_info::{MediaInfo, VideoStream, AudioStream, SubtitleStream};
 
 /// Normalize codec names to Jellyfin/FFmpeg standard
 pub fn normalize_codec(codec: &str) -> String {

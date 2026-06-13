@@ -13,7 +13,7 @@ use crate::api::handlers::{
     transcode::{get_stream_info, get_hls_playlist, get_hls_segment},
     images::get_image,
     settings::{get_settings, update_setting},
-    tv::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series},
+    series::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series},
     providers::{list_providers, get_provider_config, update_provider_config, toggle_provider, reorder_providers, test_provider},
 };
 use crate::api::middleware::auth_middleware;
@@ -42,7 +42,9 @@ pub fn app(pool: SqlitePool) -> Router {
     };
     let public_routes = Router::new()
         .route("/api/v1/auth/login", axum::routing::post(crate::api::handlers::auth::login))
-        .route("/api/v1/auth/register", axum::routing::post(crate::api::handlers::auth::register))
+        // First-run bootstrap: create the initial admin (only valid when no users exist).
+        .route("/api/v1/auth/setup-status", get(crate::api::handlers::auth::setup_status))
+        .route("/api/v1/auth/setup", axum::routing::post(crate::api::handlers::auth::setup))
         .route("/api/v1/auth/logout", axum::routing::post(crate::api::handlers::auth::logout))
         .route("/api/v1/images/:filename", get(get_image))
         .route("/api/v1/media/:id/thumbnail", get(get_thumbnail));
@@ -53,6 +55,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/stream/:id", get(stream_video).head(stream_video))
         .route("/api/v1/stream/:id/subtitles", get(get_subtitles))
         .route("/api/v1/stream/:id/audio_tracks", get(get_audio_tracks))
+        .route("/api/v1/stream/:id/mediainfo", get(crate::api::handlers::playback::get_media_info))
         .route("/api/v1/stream/:id/subtitle/embedded/:index", get(stream_embedded_subtitle))
         .route("/api/v1/stream/:id/subtitle/:filename", get(stream_subtitle))
         .route("/api/v1/stream/:id/info", axum::routing::post(get_stream_info))
@@ -86,15 +89,22 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/books/:id/page/:index", get(crate::api::handlers::books::get_book_page))
         .route("/api/v1/books/:id/file", get(crate::api::handlers::books::stream_book_file).head(crate::api::handlers::books::stream_book_file))
         .route("/api/v1/books/:id/reading-mode", axum::routing::post(crate::api::handlers::books::set_reading_mode))
-        // TV Show routes
+        // TV Show routes (keyed by series id)
         .route("/api/v1/series", get(get_all_series))
-        .route("/api/v1/series/:name/seasons", get(get_series_seasons))
-        .route("/api/v1/series/:name/detail", get(get_series_detail))
-        .route("/api/v1/series/:name/refresh", axum::routing::post(refresh_series_metadata))
-        .route("/api/v1/series/:name/identify", axum::routing::post(identify_series))
-        .route("/api/v1/series/:name/season/:num", get(get_season_episodes))
+        .route("/api/v1/series/:id/seasons", get(get_series_seasons))
+        .route("/api/v1/series/:id/detail", get(get_series_detail))
+        .route("/api/v1/series/:id/refresh", axum::routing::post(refresh_series_metadata))
+        .route("/api/v1/series/:id/identify", axum::routing::post(identify_series))
+        .route("/api/v1/series/:id/season/:num", get(get_season_episodes))
+        // Per-user settings and favorites
+        .route("/api/v1/me/settings", get(crate::api::handlers::settings::get_user_settings).post(crate::api::handlers::settings::update_user_setting))
+        .route("/api/v1/favorites", get(crate::api::handlers::favorites::list_favorites))
+        .route("/api/v1/favorites/:id", axum::routing::post(crate::api::handlers::favorites::add_favorite).delete(crate::api::handlers::favorites::remove_favorite))
         .route("/api/v1/auth/me", get(crate::api::handlers::auth::me))
         .route("/api/v1/auth/change_password", axum::routing::post(crate::api::handlers::auth::change_password))
+        // Admin-only: list / create / delete users.
+        .route("/api/v1/users", get(crate::api::handlers::auth::list_users).post(crate::api::handlers::auth::create_user))
+        .route("/api/v1/users/:id", axum::routing::delete(crate::api::handlers::auth::delete_user))
         // Metadata Provider management routes
         .route("/api/v1/providers", get(list_providers))
         .route("/api/v1/providers/order", axum::routing::put(reorder_providers))

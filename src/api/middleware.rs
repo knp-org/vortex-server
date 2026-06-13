@@ -9,9 +9,32 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use crate::api::handlers::auth::Claims;
 use crate::infrastructure::config;
 
+/// The authenticated caller, derived from the JWT and injected into request
+/// extensions by [`auth_middleware`]. Handlers extract it via `Extension<AuthUser>`.
+#[derive(Debug, Clone)]
+pub struct AuthUser {
+    pub id: i64,
+    pub role: String,
+}
+
+impl AuthUser {
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+
+    /// Returns `Ok(())` only for admins; otherwise a 403.
+    pub fn require_admin(&self) -> Result<(), crate::error::AppError> {
+        if self.is_admin() {
+            Ok(())
+        } else {
+            Err(crate::error::AppError::Forbidden("Admin privileges required".to_string()))
+        }
+    }
+}
+
 pub async fn auth_middleware(
     cookies: Cookies,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Result<impl IntoResponse, StatusCode> {
     let token = request.headers()
@@ -32,12 +55,16 @@ pub async fn auth_middleware(
 
     let token = token.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let _claims = decode::<Claims>(
+    let claims = decode::<Claims>(
         &token,
         &DecodingKey::from_secret(config::config().jwt_secret.as_bytes()),
         &Validation::default(),
     )
-    .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    .map_err(|_| StatusCode::UNAUTHORIZED)?
+    .claims;
+
+    // Make the caller available to downstream handlers via `Extension<AuthUser>`.
+    request.extensions_mut().insert(AuthUser { id: claims.uid, role: claims.role });
 
     Ok(next.run(request).await)
 }

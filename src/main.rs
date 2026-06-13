@@ -54,11 +54,8 @@ async fn main() {
     tracing::info!("Loaded configuration: {:?}", cfg);
 
     let pool = init_db().await;
+    // The `users` table is created by migrations (20260613120000_users_table.sql).
 
-    // Initialize Users Table
-    let user_service = crate::services::user_service::UserService::new(pool.clone());
-    user_service.create_table().await.expect("Failed to create users table");
-    
     // Clear transcode cache on startup to prevent disk bloat
     if cfg.clear_cache_on_startup && cfg.transcode_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&cfg.transcode_dir) {

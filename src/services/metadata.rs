@@ -1,7 +1,7 @@
 use crate::models::metadata::{NormalizedMetadata, EpisodeMetadata};
 use crate::metadata_providers::traits::MetadataProvider;
 use crate::metadata_providers::registry;
-use crate::models::db::provider::ProviderConfig;
+use crate::models::db::provider_configs::ProviderConfig;
 use sqlx::SqlitePool;
 use crate::error::AppError;
 

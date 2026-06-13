@@ -27,6 +27,7 @@ pub mod codes {
     pub const BAD_REQUEST: &str = "BAD_REQUEST";
     pub const VALIDATION_ERROR: &str = "VALIDATION_ERROR";
     pub const AUTH_REQUIRED: &str = "AUTH_REQUIRED";
+    pub const FORBIDDEN: &str = "FORBIDDEN";
     pub const INVALID_CREDENTIALS: &str = "INVALID_CREDENTIALS";
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
     pub const TRANSCODE_ERROR: &str = "TRANSCODE_ERROR";
@@ -51,6 +52,8 @@ pub enum AppError {
     BadRequest(String),
     /// Authentication error (401 Unauthorized)
     AuthError(String),
+    /// Authenticated but not allowed (403 Forbidden)
+    Forbidden(String),
     /// Generic internal error
     Internal(String),
     /// Transcode-specific error
@@ -68,6 +71,7 @@ impl AppError {
             AppError::External(_) => codes::EXTERNAL_SERVICE_ERROR,
             AppError::BadRequest(_) => codes::BAD_REQUEST,
             AppError::AuthError(_) => codes::AUTH_REQUIRED,
+            AppError::Forbidden(_) => codes::FORBIDDEN,
             AppError::Internal(_) => codes::INTERNAL_ERROR,
             AppError::TranscodeError(_) => codes::TRANSCODE_ERROR,
         }
@@ -84,6 +88,7 @@ impl std::fmt::Display for AppError {
             AppError::External(msg) => write!(f, "External service error: {}", msg),
             AppError::BadRequest(msg) => write!(f, "Bad request: {}", msg),
             AppError::AuthError(msg) => write!(f, "Authentication error: {}", msg),
+            AppError::Forbidden(msg) => write!(f, "Forbidden: {}", msg),
             AppError::Internal(msg) => write!(f, "Internal error: {}", msg),
             AppError::TranscodeError(msg) => write!(f, "Transcode error: {}", msg),
         }
@@ -108,6 +113,7 @@ impl IntoResponse for AppError {
             AppError::External(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::AuthError(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::TranscodeError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 

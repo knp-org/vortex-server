@@ -11,7 +11,7 @@ use super::common::{ListDirectoriesRequest, DirectoryEntry};
 use std::path::Path as StdPath;
 
 use crate::services::library_service::LibraryService;
-use crate::models::db::provider::LibraryProvider;
+use crate::models::db::library_providers::LibraryProvider;
 
 #[derive(serde::Deserialize)]
 pub struct CreateLibraryRequest {

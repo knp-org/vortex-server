@@ -1,13 +1,13 @@
 //! Book repository / service.
 //!
-//! Owns all persistence for [`Book`] items in the shared `media` table, so book
-//! handlers and the scanner never write raw book SQL inline. File/format
-//! operations (zip extraction, page counting) live in [`crate::services::books`].
+//! Owns reads/updates for [`Book`] items over `media_items` + `books`. Scanning goes
+//! through [`crate::services::catalog::upsert_book`]; file/format operations (zip
+//! extraction, page counting) live in [`crate::services::books`].
 
 use sqlx::SqlitePool;
 
 use crate::error::AppError;
-use crate::models::db::book::{Book, BOOK_COLUMNS};
+use crate::models::db::books::{Book, BOOK_SELECT};
 
 pub const DEFAULT_READING_MODE: &str = "vertical";
 pub const VALID_READING_MODES: &[&str] = &["vertical", "horizontal_ltr", "horizontal_rtl", "webtoon"];
@@ -25,17 +25,18 @@ impl BookService {
         Self { pool }
     }
 
-    /// Fetch a book by id, erroring if the item is missing or isn't a book.
+    /// Fetch a book by item id, erroring if missing or not a book.
     pub async fn get(&self, id: i64) -> Result<Book, AppError> {
         self.get_optional(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Book {} not found", id)))
     }
 
-    /// Fetch a book by id, returning `None` for missing items or non-book media.
+    /// Fetch a book by item id, returning `None` for missing or non-book items.
     pub async fn get_optional(&self, id: i64) -> Result<Option<Book>, AppError> {
         let query = format!(
-            "SELECT {BOOK_COLUMNS} FROM media WHERE id = ? AND media_type = 'book'"
+            "SELECT {BOOK_SELECT} FROM media_items mi JOIN books b ON b.item_id = mi.id \
+             WHERE mi.id = ? AND mi.item_type = 'book'"
         );
         Ok(sqlx::query_as::<_, Book>(&query)
             .bind(id)
@@ -68,7 +69,7 @@ impl BookService {
         if !is_valid_reading_mode(mode) {
             return Err(AppError::BadRequest(format!("Invalid reading mode: {}", mode)));
         }
-        let result = sqlx::query("UPDATE media SET reading_mode = ? WHERE id = ? AND media_type = 'book'")
+        let result = sqlx::query("UPDATE books SET reading_mode = ? WHERE item_id = ?")
             .bind(mode)
             .bind(id)
             .execute(&self.pool)
@@ -81,57 +82,11 @@ impl BookService {
 
     /// Persist a computed page count (e.g. a CBZ backfill).
     pub async fn set_page_count(&self, id: i64, count: i64) -> Result<(), AppError> {
-        sqlx::query("UPDATE media SET page_count = ? WHERE id = ?")
+        sqlx::query("UPDATE books SET page_count = ? WHERE item_id = ?")
             .bind(count)
             .bind(id)
             .execute(&self.pool)
             .await?;
-        Ok(())
-    }
-
-    /// Insert a freshly scanned book, or refresh the library link / page count
-    /// of an existing row. Title and reading-mode overrides are preserved.
-    pub async fn upsert_scanned(
-        &self,
-        file_path: &str,
-        title: &str,
-        library_id: i64,
-        page_count: Option<i64>,
-        series_name: Option<String>,
-        season_number: Option<i32>,
-        episode_number: Option<i32>,
-    ) -> Result<(), AppError> {
-        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM media WHERE file_path = ?")
-            .bind(file_path)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        if let Some((id,)) = existing {
-            sqlx::query(
-                "UPDATE media SET library_id = ?, media_type = 'book', page_count = COALESCE(?, page_count), series_name = ?, season_number = ?, episode_number = ? WHERE id = ?",
-            )
-            .bind(library_id)
-            .bind(page_count)
-            .bind(&series_name)
-            .bind(season_number)
-            .bind(episode_number)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        } else {
-            sqlx::query(
-                "INSERT INTO media (file_path, title, library_id, media_type, page_count, series_name, season_number, episode_number) VALUES (?, ?, ?, 'book', ?, ?, ?, ?)",
-            )
-            .bind(file_path)
-            .bind(title)
-            .bind(library_id)
-            .bind(page_count)
-            .bind(&series_name)
-            .bind(season_number)
-            .bind(episode_number)
-            .execute(&self.pool)
-            .await?;
-        }
         Ok(())
     }
 }

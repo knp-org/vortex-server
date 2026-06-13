@@ -56,7 +56,7 @@ impl TranscodeService {
     }
 
     pub async fn get_file_path(&self, media_id: i64) -> Result<String, AppError> {
-        let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+        let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
             .bind(media_id)
             .fetch_optional(&self.pool)
             .await

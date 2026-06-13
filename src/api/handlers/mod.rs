@@ -1,12 +1,13 @@
 pub mod books;
 pub mod common;
+pub mod favorites;
 pub mod library;
 pub mod media;
 pub mod playback;
 pub mod providers;
 pub mod transcode;
 pub mod images;
-pub mod tv;
+pub mod series;
 pub mod auth;
 pub mod settings;
 pub mod system;

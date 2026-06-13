@@ -1,4 +1,4 @@
-use crate::models::db::media::{MediaInfo};
+use crate::models::db::media_info::{MediaInfo};
 use super::codecs::{DeviceProfile, PlayMethod, TranscodeReason, DirectPlayProfile, normalize_codec};
 
 /// Logic for determining how to play a media item

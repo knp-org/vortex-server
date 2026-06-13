@@ -3,13 +3,14 @@ use axum::{
     extract::{Path, State},
     http::{header, StatusCode, HeaderMap},
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
-use sqlx::{SqlitePool, FromRow};
+use sqlx::SqlitePool;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use serde::{Serialize, Deserialize};
+use serde::Serialize;
 use crate::error::AppError;
+use crate::api::middleware::AuthUser;
 
 #[derive(serde::Deserialize)]
 pub struct UpdateProgressRequest {
@@ -18,79 +19,72 @@ pub struct UpdateProgressRequest {
     reading_style: Option<String>,
 }
 
-#[derive(Debug, FromRow, Serialize, Deserialize, Clone)]
-pub struct MediaWithProgress {
+/// One in-progress item for the per-user "continue watching" rail.
+#[derive(Debug, Serialize)]
+pub struct ContinueItem {
     pub id: i64,
-    pub library_id: i64,
-    pub file_path: String,
+    pub kind: String,
     pub title: Option<String>,
-    pub year: Option<i64>,
     pub poster_url: Option<String>,
-    pub plot: Option<String>,
-    pub media_type: Option<String>,
-    pub added_at: Option<chrono::NaiveDateTime>,
-    pub series_name: Option<String>,
-    pub season_number: Option<i32>,
-    pub episode_number: Option<i32>,
-    pub provider_ids: Option<String>,
-    pub backdrop_url: Option<String>,
-    pub still_url: Option<String>,
-    pub runtime: Option<i32>,
-    pub genres: Option<String>,
-    pub progress: Option<i64>,
-    pub library_type: Option<crate::db::models::LibraryType>,
+    pub position: i64,
+    pub total_duration: i64,
     pub reading_style: Option<String>,
+    pub stream_url: String,
 }
 
-pub async fn get_continue_watching(State(pool): State<SqlitePool>) -> Result<Json<Vec<MediaWithProgress>>, AppError> {
-    let media = sqlx::query_as::<_, MediaWithProgress>(
-        "SELECT m.*, p.position as progress, p.reading_style, l.library_type 
-         FROM media m
-         JOIN playback_progress p ON m.id = p.media_id
-         JOIN libraries l ON m.library_id = l.id
-         WHERE p.position > 10 AND p.position < (p.total_duration * 0.95)
-         AND l.library_type != 'other'
-         ORDER BY p.last_watched DESC
-         LIMIT 10"
+pub async fn get_continue_watching(
+    State(pool): State<SqlitePool>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Vec<ContinueItem>>, AppError> {
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, i64, i64, Option<String>)>(
+        "SELECT mi.id, mi.item_type,
+                COALESCE(mv.title, e.title, mvd.title) AS title,
+                COALESCE(mv.poster_url, e.still_url, mvd.poster_url) AS poster_url,
+                p.position, p.total_duration, p.reading_style
+         FROM user_media_progress p
+         JOIN media_items mi ON mi.id = p.item_id
+         LEFT JOIN movies mv ON mv.item_id = mi.id
+         LEFT JOIN episodes e ON e.item_id = mi.id
+         LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
+         WHERE p.user_id = ? AND p.position > 10 AND p.position < (p.total_duration * 0.95)
+         ORDER BY p.last_watched DESC LIMIT 10"
     )
+    .bind(user.id)
     .fetch_all(&pool)
     .await?;
 
-    Ok(Json(media))
+    let items = rows.into_iter()
+        .map(|(id, kind, title, poster_url, position, total_duration, reading_style)| ContinueItem {
+            id, kind, title, poster_url, position, total_duration, reading_style,
+            stream_url: format!("/api/v1/stream/{}", id),
+        })
+        .collect();
+
+    Ok(Json(items))
 }
 
 pub async fn update_progress(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
+    Extension(user): Extension<AuthUser>,
     Json(payload): Json<UpdateProgressRequest>,
 ) -> Result<StatusCode, AppError> {
-    let query = if payload.reading_style.is_some() {
-        sqlx::query(
-            "INSERT INTO playback_progress (media_id, position, total_duration, reading_style, last_watched) 
-             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) 
-             ON CONFLICT(media_id) DO UPDATE SET position = ?, total_duration = ?, reading_style = ?, last_watched = CURRENT_TIMESTAMP"
-        )
-        .bind(id)
-        .bind(payload.position)
-        .bind(payload.total_duration)
-        .bind(&payload.reading_style)
-        .bind(payload.position)
-        .bind(payload.total_duration)
-        .bind(&payload.reading_style)
-    } else {
-        sqlx::query(
-            "INSERT INTO playback_progress (media_id, position, total_duration, last_watched) 
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP) 
-             ON CONFLICT(media_id) DO UPDATE SET position = ?, total_duration = ?, last_watched = CURRENT_TIMESTAMP"
-        )
-        .bind(id)
-        .bind(payload.position)
-        .bind(payload.total_duration)
-        .bind(payload.position)
-        .bind(payload.total_duration)
-    };
-
-    query.execute(&pool).await?;
+    sqlx::query(
+        "INSERT INTO user_media_progress (user_id, item_id, position, total_duration, reading_style, last_watched)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id, item_id) DO UPDATE SET
+            position = excluded.position,
+            total_duration = excluded.total_duration,
+            reading_style = COALESCE(excluded.reading_style, user_media_progress.reading_style),
+            last_watched = CURRENT_TIMESTAMP"
+    )
+    .bind(user.id)
+    .bind(id)
+    .bind(payload.position)
+    .bind(payload.total_duration)
+    .bind(&payload.reading_style)
+    .execute(&pool)
+    .await?;
 
     Ok(StatusCode::OK)
 }
@@ -98,15 +92,19 @@ pub async fn update_progress(
 pub async fn get_media_progress(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let row: Option<(i64, Option<String>)> = sqlx::query_as("SELECT position, reading_style FROM playback_progress WHERE media_id = ?")
+    let row: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT position, reading_style FROM user_media_progress WHERE user_id = ? AND item_id = ?"
+    )
+        .bind(user.id)
         .bind(id)
         .fetch_optional(&pool)
         .await?;
-    
+
     let (position, style) = row.unwrap_or((0, None));
-    
-    Ok(Json(serde_json::json!({ 
+
+    Ok(Json(serde_json::json!({
         "position": position,
         "reading_style": style
     })))
@@ -118,7 +116,7 @@ pub async fn stream_video(
     method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await
@@ -224,7 +222,7 @@ pub async fn get_audio_tracks(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<AudioTrack>>, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await?;
@@ -277,6 +275,25 @@ pub async fn get_audio_tracks(
     Ok(Json(tracks))
 }
 
+/// Full ffprobe media info for an item, probed live (the per-type detail rows no
+/// longer store it). Powers the client's "Media Info" dialog.
+pub async fn get_media_info(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<crate::models::db::media_info::MediaInfo>, AppError> {
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&pool)
+        .await?;
+
+    let file_path = result
+        .map(|(p,)| p)
+        .ok_or_else(|| AppError::NotFound("Media not found".to_string()))?;
+
+    let probe = crate::services::transcode::codecs::probe_media(&file_path).await?;
+    Ok(Json(probe.media_info))
+}
+
 #[derive(Serialize)]
 pub struct SubtitleTrack {
     pub id: String,
@@ -290,7 +307,7 @@ pub async fn get_subtitles(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<SubtitleTrack>>, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await?;
@@ -374,7 +391,7 @@ pub async fn stream_subtitle(
     State(pool): State<SqlitePool>,
 ) -> Result<impl IntoResponse, AppError> {
     // 1. Get Media Path to verify security/locality
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await?;
@@ -424,7 +441,7 @@ pub async fn stream_embedded_subtitle(
     Path((id, stream_index)): Path<(i64, i32)>,
     State(pool): State<SqlitePool>,
 ) -> Result<impl IntoResponse, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media WHERE id = ?")
+    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await?;
@@ -489,7 +506,14 @@ pub async fn get_thumbnail(
     if !thumb_path.exists() {
         // 2. Get media file path and metadata
         let result: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT file_path, poster_url, backdrop_url FROM media WHERE id = ?"
+            "SELECT mi.file_path,
+                    COALESCE(mv.poster_url, e.still_url, mvd.poster_url) AS poster_url,
+                    mv.backdrop_url AS backdrop_url
+             FROM media_items mi
+             LEFT JOIN movies mv ON mv.item_id = mi.id
+             LEFT JOIN episodes e ON e.item_id = mi.id
+             LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
+             WHERE mi.id = ?"
         )
             .bind(id)
             .fetch_optional(&pool)

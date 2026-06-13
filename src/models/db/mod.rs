@@ -1,5 +1,9 @@
-pub mod media;
-pub mod book;
-pub mod library;
+pub mod media_info; // ffprobe probe output (not a table)
+pub mod movies;
+pub mod series;
+pub mod episodes;
+pub mod books;
+pub mod libraries;
 pub mod settings;
-pub mod provider;
+pub mod provider_configs;
+pub mod library_providers;

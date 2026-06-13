@@ -177,7 +177,13 @@ impl TvdbProvider {
         }
 
         if !resp.status().is_success() {
-            return Err(AppError::External(format!("TVDB API error: {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(provider = "tvdb", endpoint = endpoint, %status, body = %body, "TVDB API error");
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(AppError::NotFound(format!("TVDB: {} not found", endpoint)));
+            }
+            return Err(AppError::External(format!("TVDB API error: {} - {}", status, body)));
         }
 
         Ok(resp)
@@ -352,14 +358,14 @@ impl MetadataProvider for TvdbProvider {
         let mut age_rating = None;
         if let Some(ratings) = &result.data.content_ratings {
             for r in ratings {
-                if r.country == "usa" || r.country == "USA" {
-                    age_rating = Some(r.name.clone());
+                if matches!(r.country.as_deref(), Some("usa") | Some("USA")) {
+                    age_rating = r.name.clone();
                     break;
                 }
             }
             if age_rating.is_none() {
                 if let Some(r) = ratings.first() {
-                    age_rating = Some(r.name.clone());
+                    age_rating = r.name.clone();
                 }
             }
         }
@@ -367,15 +373,15 @@ impl MetadataProvider for TvdbProvider {
         let mut studio = None;
         if let Some(companies) = &result.data.companies {
             if let Some(c) = companies.first() {
-                studio = Some(c.name.clone());
+                studio = c.name.clone();
             }
         }
 
         let mut trailer_url = None;
         if let Some(trailers) = &result.data.trailers {
             for t in trailers {
-                if t.language == "eng" {
-                    trailer_url = Some(t.url.clone());
+                if t.language.as_deref() == Some("eng") {
+                    trailer_url = t.url.clone();
                     break;
                 }
             }
@@ -383,10 +389,7 @@ impl MetadataProvider for TvdbProvider {
 
         let mut tags_list = None;
         if let Some(tags) = &result.data.tags {
-            let mut t_vec = Vec::new();
-            for t in tags {
-                t_vec.push(t.name.clone());
-            }
+            let t_vec: Vec<String> = tags.iter().filter_map(|t| t.name.clone()).collect();
             if !t_vec.is_empty() {
                 tags_list = Some(t_vec);
             }
@@ -400,7 +403,7 @@ impl MetadataProvider for TvdbProvider {
             backdrop_url,
             media_type: media_type.map(|s| s.to_string()),
             provider_ids: Some(serde_json::Value::Object(provider_ids)),
-            genres: result.data.genres.map(|gs| gs.into_iter().map(|g| g.name).collect()),
+            genres: result.data.genres.map(|gs| gs.into_iter().filter_map(|g| g.name).collect()),
             runtime: None,
             rating: None,
             cast,

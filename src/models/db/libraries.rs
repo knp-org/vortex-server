@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 pub enum LibraryType {
     Movies,
     TvShows,
+    Music,
     MusicVideos,
     Books,
+    Images,
     Other,
 }
 
