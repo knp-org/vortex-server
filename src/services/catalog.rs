@@ -315,6 +315,65 @@ pub async fn upsert_music_video(pool: &SqlitePool, item_id: i64, title: &str) ->
     Ok(())
 }
 
+// ── Music: artists → albums → tracks ───────────────────────────────────────
+
+/// Get-or-create an artist by (library, name).
+pub async fn get_or_create_artist(pool: &SqlitePool, library_id: i64, name: &str) -> Result<i64, AppError> {
+    sqlx::query("INSERT OR IGNORE INTO artists (library_id, name) VALUES (?, ?)")
+        .bind(library_id).bind(name).execute(pool).await?;
+    let (id,) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE library_id = ? AND name = ?")
+        .bind(library_id).bind(name).fetch_one(pool).await?;
+    Ok(id)
+}
+
+/// Get-or-create an album under an artist. Fills `year` on first creation.
+pub async fn get_or_create_album(
+    pool: &SqlitePool,
+    artist_id: i64,
+    library_id: i64,
+    title: &str,
+    year: Option<i64>,
+) -> Result<i64, AppError> {
+    sqlx::query("INSERT OR IGNORE INTO albums (artist_id, library_id, title, year) VALUES (?, ?, ?, ?)")
+        .bind(artist_id).bind(library_id).bind(title).bind(year).execute(pool).await?;
+    let (id,) = sqlx::query_as::<_, (i64,)>("SELECT id FROM albums WHERE artist_id = ? AND title = ?")
+        .bind(artist_id).bind(title).fetch_one(pool).await?;
+    Ok(id)
+}
+
+/// Set an album's cover URL only if it doesn't already have one.
+pub async fn set_album_cover_if_empty(pool: &SqlitePool, album_id: i64, cover_url: &str) -> Result<(), AppError> {
+    sqlx::query("UPDATE albums SET cover_url = ? WHERE id = ? AND (cover_url IS NULL OR cover_url = '')")
+        .bind(cover_url).bind(album_id).execute(pool).await?;
+    Ok(())
+}
+
+/// Upsert a `tracks` detail row. The spine row is created by [`upsert_item`] first.
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_track(
+    pool: &SqlitePool,
+    item_id: i64,
+    album_id: i64,
+    artist_id: i64,
+    track_number: Option<i64>,
+    disc_number: Option<i64>,
+    title: &str,
+    duration: Option<i64>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO tracks (item_id, album_id, artist_id, track_number, disc_number, title, duration)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(item_id) DO UPDATE SET
+            album_id=excluded.album_id, artist_id=excluded.artist_id,
+            track_number=excluded.track_number, disc_number=excluded.disc_number,
+            title=excluded.title, duration=excluded.duration"
+    )
+    .bind(item_id).bind(album_id).bind(artist_id)
+    .bind(track_number).bind(disc_number).bind(title).bind(duration)
+    .execute(pool).await?;
+    Ok(())
+}
+
 /// Delete a spine row (cascades to its detail row, credits, genres and user state).
 pub async fn delete_item(pool: &SqlitePool, item_id: i64) -> Result<(), AppError> {
     sqlx::query("DELETE FROM media_items WHERE id = ?").bind(item_id).execute(pool).await?;

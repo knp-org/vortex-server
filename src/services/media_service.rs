@@ -6,7 +6,7 @@
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::db::libraries::LibraryType;
-use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail};
+use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail};
 
 fn stream_url(item_id: i64) -> String {
     format!("/api/v1/stream/{}", item_id)
@@ -60,6 +60,11 @@ pub async fn list_library(pool: &SqlitePool, library_id: i64, library_type: &Lib
              WHERE mi.library_id = ? ORDER BY b.title"
         ).bind(library_id).fetch_all(pool).await?,
 
+        LibraryType::Music => sqlx::query_as::<_, Card>(
+            "SELECT id, 'album' AS kind, title, cover_url AS poster_url, year, NULL AS stream_url
+             FROM albums WHERE library_id = ? ORDER BY title"
+        ).bind(library_id).fetch_all(pool).await?,
+
         LibraryType::MusicVideos => sqlx::query_as::<_, Card>(
             "SELECT mi.id, 'music_video' AS kind, mv.title, mv.poster_url, mv.year,
                     ('/api/v1/stream/' || mi.id) AS stream_url
@@ -101,6 +106,13 @@ pub async fn recently_added(pool: &SqlitePool) -> Result<Vec<Card>, AppError> {
                       JOIN seasons se ON se.id = e.season_id
                     WHERE se.series_id = s.id) AS added_at
             FROM series s
+            UNION ALL
+            SELECT al.id, 'album' AS kind, al.title, al.cover_url, al.year,
+                   NULL AS stream_url,
+                   (SELECT MAX(mi.added_at) FROM media_items mi
+                      JOIN tracks t ON t.item_id = mi.id
+                    WHERE t.album_id = al.id) AS added_at
+            FROM albums al
         )
         WHERE added_at IS NOT NULL
         ORDER BY added_at DESC LIMIT 20"
@@ -122,9 +134,15 @@ pub async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppErro
             UNION ALL
             SELECT mi.id, 'book' AS kind, b.title, b.poster_url, NULL AS year, NULL AS stream_url
             FROM media_items mi JOIN books b ON b.item_id = mi.id WHERE b.title LIKE ?
+            UNION ALL
+            SELECT id, 'album' AS kind, title, cover_url AS poster_url, year, NULL AS stream_url
+            FROM albums WHERE title LIKE ?
+            UNION ALL
+            SELECT id, 'artist' AS kind, name AS title, image_url AS poster_url, NULL AS year, NULL AS stream_url
+            FROM artists WHERE name LIKE ?
         )
         ORDER BY title LIMIT 20"
-    ).bind(&like).bind(&like).bind(&like).fetch_all(pool).await?;
+    ).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).fetch_all(pool).await?;
     Ok(cards)
 }
 
@@ -298,6 +316,81 @@ pub async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, 
         publisher: b.publisher,
         published_date: b.published_date,
         isbn: b.isbn,
+    })
+}
+
+// ── Music reads ────────────────────────────────────────────────────────────
+
+/// Album cards, optionally restricted to one artist.
+pub async fn artist_albums(pool: &SqlitePool, artist_id: i64) -> Result<Vec<Card>, AppError> {
+    Ok(sqlx::query_as::<_, Card>(
+        "SELECT id, 'album' AS kind, title, cover_url AS poster_url, year, NULL AS stream_url
+         FROM albums WHERE artist_id = ? ORDER BY year, title"
+    ).bind(artist_id).fetch_all(pool).await?)
+}
+
+/// Artist cards, optionally restricted to one library.
+pub async fn artist_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+    let cards = match library_id {
+        Some(id) => sqlx::query_as::<_, Card>(
+            "SELECT id, 'artist' AS kind, name AS title, image_url AS poster_url, NULL AS year, NULL AS stream_url
+             FROM artists WHERE library_id = ? ORDER BY name"
+        ).bind(id).fetch_all(pool).await?,
+        None => sqlx::query_as::<_, Card>(
+            "SELECT id, 'artist' AS kind, name AS title, image_url AS poster_url, NULL AS year, NULL AS stream_url
+             FROM artists ORDER BY name"
+        ).fetch_all(pool).await?,
+    };
+    Ok(cards)
+}
+
+pub async fn artist_detail(pool: &SqlitePool, artist_id: i64) -> Result<ArtistDetail, AppError> {
+    let a = sqlx::query_as::<_, crate::models::db::artists::Artist>(
+        "SELECT * FROM artists WHERE id = ?"
+    ).bind(artist_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {} not found", artist_id)))?;
+
+    Ok(ArtistDetail {
+        id: a.id,
+        name: a.name,
+        bio: a.bio,
+        image_url: a.image_url,
+        albums: artist_albums(pool, artist_id).await?,
+    })
+}
+
+pub async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetail, AppError> {
+    let al = sqlx::query_as::<_, crate::models::db::albums::Album>(
+        "SELECT * FROM albums WHERE id = ?"
+    ).bind(album_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Album {} not found", album_id)))?;
+
+    let artist = match al.artist_id {
+        Some(aid) => sqlx::query_scalar::<_, String>("SELECT name FROM artists WHERE id = ?")
+            .bind(aid).fetch_optional(pool).await?,
+        None => None,
+    };
+
+    let tracks = sqlx::query_as::<_, crate::models::db::tracks::Track>(
+        "SELECT t.* FROM tracks t WHERE t.album_id = ?
+         ORDER BY COALESCE(t.disc_number, 1), COALESCE(t.track_number, 9999), t.title"
+    ).bind(album_id).fetch_all(pool).await?;
+
+    Ok(AlbumDetail {
+        id: al.id,
+        title: al.title,
+        artist_id: al.artist_id,
+        artist,
+        year: al.year,
+        cover_url: al.cover_url,
+        tracks: tracks.into_iter().map(|t| TrackDto {
+            id: t.item_id,
+            track_number: t.track_number,
+            disc_number: t.disc_number,
+            title: t.title,
+            duration: t.duration,
+            stream_url: stream_url(t.item_id),
+        }).collect(),
     })
 }
 

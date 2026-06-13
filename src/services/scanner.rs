@@ -18,6 +18,7 @@ static SEASON_REGEX: OnceLock<Regex> = OnceLock::new();
 static EPISODE_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "wmv", "m4v", "mpg", "mpeg", "flv", "ts"];
+const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "m4a", "m4b", "aac", "ogg", "oga", "opus", "wav", "wma", "alac", "aiff", "aif", "ape", "wv", "mpc"];
 
 fn get_season_regex() -> &'static Regex {
     SEASON_REGEX.get_or_init(|| Regex::new(r"season\s*(\d+)").unwrap())
@@ -67,13 +68,14 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
     for library in libraries {
         tracing::info!(library = %library.name, library_type = ?library.library_type, "Scanning library");
 
-        // Music and Image scanning land in a later slice (tag/EXIF readers).
-        if matches!(library.library_type, LibraryType::Music | LibraryType::Images) {
-            tracing::warn!(library = %library.name, "Skipping: Music/Images scanning not implemented yet");
+        // Image scanning lands in a later slice (EXIF reader).
+        if library.library_type == LibraryType::Images {
+            tracing::warn!(library = %library.name, "Skipping: Images scanning not implemented yet");
             continue;
         }
 
         let is_books = library.library_type == LibraryType::Books;
+        let is_music = library.library_type == LibraryType::Music;
 
         // Each entry is (file path, owning root path) so TV parsing can strip the
         // correct root when a library spans multiple folders.
@@ -88,6 +90,8 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
                                 let ext_str = ext.to_string_lossy().to_lowercase();
                                 let matches = if is_books {
                                     crate::services::books::BOOK_EXTENSIONS.contains(&ext_str.as_str())
+                                } else if is_music {
+                                    AUDIO_EXTENSIONS.contains(&ext_str.as_str())
                                 } else {
                                     VIDEO_EXTENSIONS.contains(&ext_str.as_str())
                                 };
@@ -112,6 +116,8 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
             .for_each_concurrent(4, |(path, root)| async move {
                 if is_books {
                     process_book(pool_ref, &path, lib_ref).await;
+                } else if is_music {
+                    process_music(pool_ref, &path, lib_ref).await;
                 } else {
                     process_video(pool_ref, &path, &root, lib_ref, force_refresh, cache_ref.clone()).await;
                 }
@@ -208,6 +214,121 @@ async fn process_book(pool: &SqlitePool, path: &Path, library: &Library) {
     };
     if let Err(e) = catalog::upsert_book(pool, item_id, &file_stem, page_count).await {
         tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book");
+    }
+}
+
+/// Extracted audio tags (read off-thread via lofty).
+#[derive(Default)]
+struct AudioTags {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    track: Option<i64>,
+    disc: Option<i64>,
+    year: Option<i64>,
+    duration: Option<i64>,
+    /// Embedded cover art as (bytes, file extension).
+    cover: Option<(Vec<u8>, String)>,
+}
+
+/// Read tags from an audio file (blocking; call via `spawn_blocking`).
+fn read_audio_tags(path: &str) -> AudioTags {
+    use lofty::prelude::*;
+    use lofty::tag::ItemKey;
+    let mut out = AudioTags::default();
+
+    let tagged = match lofty::read_from_path(path) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(file = %path, error = %e, "Failed to read audio tags");
+            return out;
+        }
+    };
+
+    out.duration = Some(tagged.properties().duration().as_secs() as i64);
+
+    if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
+        out.title = tag.title().map(|s| s.to_string());
+        out.artist = tag.artist().map(|s| s.to_string());
+        out.album = tag.album().map(|s| s.to_string());
+        out.track = tag.track().map(|n| n as i64);
+        out.disc = tag.disk().map(|n| n as i64);
+        // lofty 0.24 has no `year()` accessor; read the Year/RecordingDate string.
+        out.year = tag.get_string(ItemKey::Year)
+            .or_else(|| tag.get_string(ItemKey::RecordingDate))
+            .and_then(|s| s.get(0..4).and_then(|y| y.parse::<i64>().ok()));
+
+        if let Some(pic) = tag.pictures().first() {
+            let ext = match pic.mime_type().map(|m| m.as_str()) {
+                Some("image/png") => "png",
+                _ => "jpg",
+            };
+            out.cover = Some((pic.data().to_vec(), ext.to_string()));
+        }
+    }
+
+    out
+}
+
+/// Ingest a single audio file into `media_items` + `tracks`, building the
+/// artist → album → track hierarchy from its tags.
+async fn process_music(pool: &SqlitePool, path: &Path, library: &Library) {
+    let path_str = path.to_string_lossy().to_string();
+    let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
+
+    let p = path_str.clone();
+    let tags = tokio::task::spawn_blocking(move || read_audio_tags(&p))
+        .await
+        .unwrap_or_default();
+
+    let artist_name = tags.artist.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Unknown Artist")
+        .to_string();
+
+    // Album falls back to the containing folder name, then "Unknown Album".
+    let album_title = tags.album.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Unknown Album".to_string())
+        });
+
+    let track_title = tags.title.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or(file_stem);
+
+    let artist_id = match catalog::get_or_create_artist(pool, library.id, &artist_name).await {
+        Ok(id) => id,
+        Err(e) => { tracing::warn!(error = %e, "Failed to get/create artist"); return; }
+    };
+    let album_id = match catalog::get_or_create_album(pool, artist_id, library.id, &album_title, tags.year).await {
+        Ok(id) => id,
+        Err(e) => { tracing::warn!(error = %e, "Failed to get/create album"); return; }
+    };
+    let item_id = match catalog::upsert_item(pool, library.id, "track", &path_str).await {
+        Ok(id) => id,
+        Err(e) => { tracing::warn!(error = %e, "Failed to upsert track item"); return; }
+    };
+    if let Err(e) = catalog::upsert_track(pool, item_id, album_id, artist_id, tags.track, tags.disc, &track_title, tags.duration).await {
+        tracing::warn!(error = %e, "Failed to upsert track");
+    }
+
+    // Save embedded album art once per album (best-effort).
+    if let Some((bytes, ext)) = tags.cover {
+        let dir = std::path::Path::new("thumbnails");
+        if !dir.exists() { let _ = std::fs::create_dir(dir); }
+        let fname = format!("album_{}.{}", album_id, ext);
+        if tokio::fs::write(dir.join(&fname), &bytes).await.is_ok() {
+            let _ = catalog::set_album_cover_if_empty(pool, album_id, &format!("/api/v1/images/{}", fname)).await;
+        }
     }
 }
 

@@ -73,6 +73,10 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/media/:id/identify", axum::routing::post(identify_media))
         .route("/api/v1/metadata/search", get(search_handler))
         .route("/api/v1/library/search", get(search_library))
+        // Music browse
+        .route("/api/v1/artists", get(crate::api::handlers::media::get_artists))
+        .route("/api/v1/artists/:id", get(crate::api::handlers::media::get_artist_detail))
+        .route("/api/v1/albums/:id", get(crate::api::handlers::media::get_album_detail))
 
         .route("/api/v1/settings", get(get_settings).post(update_setting))
         .route("/api/v1/settings/transcode", get(crate::api::handlers::transcode::get_transcode_settings).post(crate::api::handlers::transcode::update_transcode_settings))

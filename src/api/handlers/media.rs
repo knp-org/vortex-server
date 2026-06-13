@@ -7,8 +7,13 @@ use serde_json::json;
 use crate::error::AppError;
 use crate::services::{media_service, catalog};
 use crate::services::library_service::LibraryService;
-use crate::api::dtos::responses::Card;
+use crate::api::dtos::responses::{Card, AlbumDetail, ArtistDetail};
 use crate::api::dtos::requests::{SearchQuery, IdentifyRequest};
+
+#[derive(serde::Deserialize)]
+pub struct LibraryScopedQuery {
+    pub library_id: Option<i64>,
+}
 
 pub async fn get_library_media(
     Path(id): Path<i64>,
@@ -36,6 +41,15 @@ pub async fn get_media_details(
     let mut value = match item_type.as_str() {
         "book" => json!(media_service::book_detail(&pool, id).await?),
         "episode" => json!(media_service::episode_detail(&pool, id).await?),
+        "track" => {
+            // A track's "detail" is its album (so the client can show the track list).
+            let album_id: Option<(Option<i64>,)> = sqlx::query_as("SELECT album_id FROM tracks WHERE item_id = ?")
+                .bind(id).fetch_optional(&pool).await?;
+            match album_id.and_then(|r| r.0) {
+                Some(aid) => json!(media_service::album_detail(&pool, aid).await?),
+                None => json!({ "id": id }),
+            }
+        }
         _ => json!(media_service::movie_detail(&pool, id).await?),
     };
     // Add a type discriminator so the client knows which detail shape it received.
@@ -115,4 +129,27 @@ pub async fn search_library(
     axum::extract::Query(params): axum::extract::Query<SearchQuery>,
 ) -> Result<Json<Vec<Card>>, AppError> {
     Ok(Json(media_service::search(&pool, &params.query).await?))
+}
+
+// ── Music browse ───────────────────────────────────────────────────────────
+
+pub async fn get_artists(
+    State(pool): State<SqlitePool>,
+    axum::extract::Query(q): axum::extract::Query<LibraryScopedQuery>,
+) -> Result<Json<Vec<Card>>, AppError> {
+    Ok(Json(media_service::artist_cards(&pool, q.library_id).await?))
+}
+
+pub async fn get_artist_detail(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<ArtistDetail>, AppError> {
+    Ok(Json(media_service::artist_detail(&pool, id).await?))
+}
+
+pub async fn get_album_detail(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<AlbumDetail>, AppError> {
+    Ok(Json(media_service::album_detail(&pool, id).await?))
 }

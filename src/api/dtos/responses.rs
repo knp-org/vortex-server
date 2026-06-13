@@ -97,6 +97,36 @@ pub struct EpisodeDto {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TrackDto {
+    pub id: i64, // media_items.id
+    pub track_number: Option<i64>,
+    pub disc_number: Option<i64>,
+    pub title: Option<String>,
+    pub duration: Option<i64>,
+    pub stream_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AlbumDetail {
+    pub id: i64,
+    pub title: String,
+    pub artist_id: Option<i64>,
+    pub artist: Option<String>,
+    pub year: Option<i64>,
+    pub cover_url: Option<String>,
+    pub tracks: Vec<TrackDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtistDetail {
+    pub id: i64,
+    pub name: String,
+    pub bio: Option<String>,
+    pub image_url: Option<String>,
+    pub albums: Vec<Card>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct BookDetail {
     pub id: i64,
     pub title: Option<String>,
