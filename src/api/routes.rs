@@ -8,7 +8,7 @@ use tower_http::cors::CorsLayer;
 use sqlx::SqlitePool;
 use crate::api::handlers::{
     library::{get_libraries, create_library, delete_library, scan_all_libraries, list_directories, browse_library, scan_library, refresh_library, get_library_providers, update_library_providers},
-    media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library},
+    media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library, get_track_lyrics},
     playback::{stream_video, update_progress, get_continue_watching, get_media_progress, get_subtitles, stream_subtitle, stream_embedded_subtitle, get_audio_tracks, get_thumbnail},
     transcode::{get_stream_info, get_hls_playlist, get_hls_segment},
     images::get_image,
@@ -65,6 +65,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/libraries", get(get_libraries).post(create_library))
         .route("/api/v1/libraries/:id", axum::routing::delete(delete_library).put(crate::api::handlers::library::update_library))
         .route("/api/v1/libraries/:id/media", get(get_library_media))
+        .route("/api/v1/libraries/:id/tracks", get(crate::api::handlers::media::get_library_tracks))
         .route("/api/v1/libraries/:id/browse", get(browse_library))
         .route("/api/v1/libraries/:id/providers", get(get_library_providers).put(update_library_providers))
         .route("/api/v1/media/:id", get(get_media_details))
@@ -77,6 +78,11 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/artists", get(crate::api::handlers::media::get_artists))
         .route("/api/v1/artists/:id", get(crate::api::handlers::media::get_artist_detail))
         .route("/api/v1/albums/:id", get(crate::api::handlers::media::get_album_detail))
+        // Per-user playlists
+        .route("/api/v1/me/playlists", get(crate::api::handlers::playlists::list_playlists).post(crate::api::handlers::playlists::create_playlist))
+        .route("/api/v1/me/playlists/:id", get(crate::api::handlers::playlists::get_playlist).delete(crate::api::handlers::playlists::delete_playlist))
+        .route("/api/v1/me/playlists/:id/tracks", axum::routing::post(crate::api::handlers::playlists::add_track))
+        .route("/api/v1/me/playlists/:id/tracks/:item_id", axum::routing::delete(crate::api::handlers::playlists::remove_track))
 
         .route("/api/v1/settings", get(get_settings).post(update_setting))
         .route("/api/v1/settings/transcode", get(crate::api::handlers::transcode::get_transcode_settings).post(crate::api::handlers::transcode::update_transcode_settings))
@@ -86,6 +92,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/scan", axum::routing::post(scan_all_libraries))
         .route("/api/v1/libraries/:id/scan", axum::routing::post(scan_library))
         .route("/api/v1/libraries/:id/refresh", axum::routing::post(refresh_library))
+        .route("/api/v1/media/:id/lyrics", get(get_track_lyrics))
         .route("/api/v1/media/:id/progress", get(get_media_progress).post(update_progress))
         .route("/api/v1/continue", get(get_continue_watching))
         // Book reader routes

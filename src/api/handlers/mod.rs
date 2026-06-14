@@ -4,6 +4,7 @@ pub mod favorites;
 pub mod library;
 pub mod media;
 pub mod playback;
+pub mod playlists;
 pub mod providers;
 pub mod transcode;
 pub mod images;

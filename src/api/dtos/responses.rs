@@ -102,8 +102,39 @@ pub struct TrackDto {
     pub track_number: Option<i64>,
     pub disc_number: Option<i64>,
     pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub cover_url: Option<String>,
     pub duration: Option<i64>,
     pub stream_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MusicVideoDetail {
+    pub id: i64,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub year: Option<i64>,
+    pub plot: Option<String>,
+    pub poster_url: Option<String>,
+    pub runtime: Option<i64>,
+    pub genres: Vec<String>,
+    pub stream_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct PlaylistDto {
+    pub id: i64,
+    pub name: String,
+    pub track_count: i64,
+    pub created_at: Option<chrono::NaiveDateTime>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistDetail {
+    pub id: i64,
+    pub name: String,
+    pub tracks: Vec<TrackDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]

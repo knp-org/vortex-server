@@ -28,6 +28,16 @@ pub async fn get_recently_added(State(pool): State<SqlitePool>) -> Result<Json<V
     Ok(Json(media_service::recently_added(&pool).await?))
 }
 
+/// Lyrics for a track: sidecar `.lrc`/`.txt`, embedded tags, then lrclib.net.
+/// Always 200 with a (possibly empty) result so the client can show a clean
+/// "no lyrics" state rather than handling a 404.
+pub async fn get_track_lyrics(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<i64>,
+) -> Result<Json<crate::services::lyrics::Lyrics>, AppError> {
+    Ok(Json(crate::services::lyrics::for_track(&pool, id).await?))
+}
+
 /// Detail view, dispatched by the item's type.
 pub async fn get_media_details(
     State(pool): State<SqlitePool>,
@@ -40,6 +50,7 @@ pub async fn get_media_details(
 
     let mut value = match item_type.as_str() {
         "book" => json!(media_service::book_detail(&pool, id).await?),
+        "music_video" => json!(media_service::music_video_detail(&pool, id).await?),
         "episode" => json!(media_service::episode_detail(&pool, id).await?),
         "track" => {
             // A track's "detail" is its album (so the client can show the track list).
@@ -138,6 +149,13 @@ pub async fn get_artists(
     axum::extract::Query(q): axum::extract::Query<LibraryScopedQuery>,
 ) -> Result<Json<Vec<Card>>, AppError> {
     Ok(Json(media_service::artist_cards(&pool, q.library_id).await?))
+}
+
+pub async fn get_library_tracks(
+    Path(id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<Vec<crate::api::dtos::responses::TrackDto>>, AppError> {
+    Ok(Json(media_service::library_tracks(&pool, id).await?))
 }
 
 pub async fn get_artist_detail(

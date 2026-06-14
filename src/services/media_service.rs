@@ -6,7 +6,7 @@
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::db::libraries::LibraryType;
-use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail};
+use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, MusicVideoDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail};
 
 fn stream_url(item_id: i64) -> String {
     format!("/api/v1/stream/{}", item_id)
@@ -135,6 +135,10 @@ pub async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppErro
             SELECT mi.id, 'book' AS kind, b.title, b.poster_url, NULL AS year, NULL AS stream_url
             FROM media_items mi JOIN books b ON b.item_id = mi.id WHERE b.title LIKE ?
             UNION ALL
+            SELECT mi.id, 'music_video' AS kind, mvd.title, mvd.poster_url, mvd.year,
+                   ('/api/v1/stream/' || mi.id) AS stream_url
+            FROM media_items mi JOIN music_videos mvd ON mvd.item_id = mi.id WHERE mvd.title LIKE ?
+            UNION ALL
             SELECT id, 'album' AS kind, title, cover_url AS poster_url, year, NULL AS stream_url
             FROM albums WHERE title LIKE ?
             UNION ALL
@@ -142,7 +146,7 @@ pub async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppErro
             FROM artists WHERE name LIKE ?
         )
         ORDER BY title LIMIT 20"
-    ).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).fetch_all(pool).await?;
+    ).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).fetch_all(pool).await?;
     Ok(cards)
 }
 
@@ -177,6 +181,25 @@ pub async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail
         provider_ids: row.provider_ids,
         genres: item_genres(pool, item_id).await?,
         cast: item_credits(pool, item_id).await?,
+        stream_url: stream_url(item_id),
+    })
+}
+
+pub async fn music_video_detail(pool: &SqlitePool, item_id: i64) -> Result<MusicVideoDetail, AppError> {
+    let row = sqlx::query_as::<_, crate::models::db::music_videos::MusicVideo>(
+        "SELECT * FROM music_videos WHERE item_id = ?"
+    ).bind(item_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Music video {} not found", item_id)))?;
+
+    Ok(MusicVideoDetail {
+        id: row.item_id,
+        title: row.title,
+        artist: row.artist_name,
+        year: row.year,
+        plot: row.plot,
+        poster_url: row.poster_url,
+        runtime: row.runtime,
+        genres: item_genres(pool, item_id).await?,
         stream_url: stream_url(item_id),
     })
 }
@@ -344,6 +367,24 @@ pub async fn artist_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<
     Ok(cards)
 }
 
+/// All tracks in a music library, ordered by artist → album → disc/track.
+pub async fn library_tracks(pool: &SqlitePool, library_id: i64) -> Result<Vec<TrackDto>, AppError> {
+    let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)>(
+        "SELECT mi.id, t.track_number, t.disc_number, t.title, ar.name AS artist, al.title AS album, al.cover_url, t.duration
+         FROM media_items mi
+         JOIN tracks t ON t.item_id = mi.id
+         LEFT JOIN albums al ON al.id = t.album_id
+         LEFT JOIN artists ar ON ar.id = t.artist_id
+         WHERE mi.library_id = ?
+         ORDER BY ar.name, al.title, COALESCE(t.disc_number, 1), COALESCE(t.track_number, 9999), t.title"
+    ).bind(library_id).fetch_all(pool).await?;
+
+    Ok(rows.into_iter().map(|(id, track_number, disc_number, title, artist, album, cover_url, duration)| TrackDto {
+        id, track_number, disc_number, title, artist, album, cover_url, duration,
+        stream_url: stream_url(id),
+    }).collect())
+}
+
 pub async fn artist_detail(pool: &SqlitePool, artist_id: i64) -> Result<ArtistDetail, AppError> {
     let a = sqlx::query_as::<_, crate::models::db::artists::Artist>(
         "SELECT * FROM artists WHERE id = ?"
@@ -376,11 +417,13 @@ pub async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetai
          ORDER BY COALESCE(t.disc_number, 1), COALESCE(t.track_number, 9999), t.title"
     ).bind(album_id).fetch_all(pool).await?;
 
+    let album_title = al.title.clone();
+    let cover = al.cover_url.clone();
     Ok(AlbumDetail {
         id: al.id,
         title: al.title,
         artist_id: al.artist_id,
-        artist,
+        artist: artist.clone(),
         year: al.year,
         cover_url: al.cover_url,
         tracks: tracks.into_iter().map(|t| TrackDto {
@@ -388,10 +431,32 @@ pub async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetai
             track_number: t.track_number,
             disc_number: t.disc_number,
             title: t.title,
+            artist: artist.clone(),
+            album: Some(album_title.clone()),
+            cover_url: cover.clone(),
             duration: t.duration,
             stream_url: stream_url(t.item_id),
         }).collect(),
     })
+}
+
+/// Enriched tracks for a playlist, in order.
+pub async fn playlist_tracks(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<TrackDto>, AppError> {
+    let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)>(
+        "SELECT mi.id, t.track_number, t.disc_number, t.title, ar.name AS artist, al.title AS album, al.cover_url, t.duration
+         FROM playlist_tracks pt
+         JOIN media_items mi ON mi.id = pt.item_id
+         JOIN tracks t ON t.item_id = mi.id
+         LEFT JOIN albums al ON al.id = t.album_id
+         LEFT JOIN artists ar ON ar.id = t.artist_id
+         WHERE pt.playlist_id = ?
+         ORDER BY pt.position"
+    ).bind(playlist_id).fetch_all(pool).await?;
+
+    Ok(rows.into_iter().map(|(id, track_number, disc_number, title, artist, album, cover_url, duration)| TrackDto {
+        id, track_number, disc_number, title, artist, album, cover_url, duration,
+        stream_url: stream_url(id),
+    }).collect())
 }
 
 /// Look up the provider id stored on a movie or series, for metadata refresh.

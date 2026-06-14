@@ -38,6 +38,7 @@ test_*.rs
 
 # Databases
 /thumbnails
+/lyrics
 transcode/
 *.db
 *.db-shm
