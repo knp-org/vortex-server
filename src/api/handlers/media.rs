@@ -28,14 +28,20 @@ pub async fn get_recently_added(State(pool): State<SqlitePool>) -> Result<Json<V
     Ok(Json(media_service::recently_added(&pool).await?))
 }
 
+#[derive(serde::Deserialize)]
+pub struct LyricsQuery {
+    pub force: Option<bool>,
+}
+
 /// Lyrics for a track: sidecar `.lrc`/`.txt`, embedded tags, then lrclib.net.
 /// Always 200 with a (possibly empty) result so the client can show a clean
 /// "no lyrics" state rather than handling a 404.
 pub async fn get_track_lyrics(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<LyricsQuery>,
 ) -> Result<Json<crate::services::lyrics::Lyrics>, AppError> {
-    Ok(Json(crate::services::lyrics::for_track(&pool, id).await?))
+    Ok(Json(crate::services::lyrics::for_track(&pool, id, query.force.unwrap_or(false)).await?))
 }
 
 /// Detail view, dispatched by the item's type.

@@ -115,9 +115,9 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
         stream::iter(paths)
             .for_each_concurrent(4, |(path, root)| async move {
                 if is_books {
-                    process_book(pool_ref, &path, lib_ref).await;
+                    process_book(pool_ref, &path, lib_ref, force_refresh).await;
                 } else if is_music {
-                    process_music(pool_ref, &path, lib_ref).await;
+                    process_music(pool_ref, &path, lib_ref, force_refresh).await;
                 } else {
                     process_video(pool_ref, &path, &root, lib_ref, force_refresh, cache_ref.clone()).await;
                 }
@@ -191,9 +191,25 @@ fn parse_episode_number(filename: &str) -> Option<i64> {
 }
 
 /// Ingest a single book file (pdf/cbz/epub) into `media_items` + `books`.
-async fn process_book(pool: &SqlitePool, path: &Path, library: &Library) {
+/// True if a media item with this file path already exists in the DB.
+async fn item_exists(pool: &SqlitePool, file_path: &str) -> bool {
+    sqlx::query_as::<_, (i64,)>("SELECT id FROM media_items WHERE file_path = ?")
+        .bind(file_path)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .is_some()
+}
+
+async fn process_book(pool: &SqlitePool, path: &Path, library: &Library, force_refresh: bool) {
     let path_str = path.to_string_lossy().to_string();
     let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
+
+    // Fast scan: only ingest new files. Skip files already in the library so
+    // manual metadata edits are preserved. A full refresh re-applies everything.
+    if !force_refresh && item_exists(pool, &path_str).await {
+        return;
+    }
 
     let page_count: Option<i64> = match crate::services::books::detect(&path_str) {
         Some(crate::services::books::BookFormat::Cbz) => {
@@ -272,9 +288,15 @@ fn read_audio_tags(path: &str) -> AudioTags {
 
 /// Ingest a single audio file into `media_items` + `tracks`, building the
 /// artist → album → track hierarchy from its tags.
-async fn process_music(pool: &SqlitePool, path: &Path, library: &Library) {
+async fn process_music(pool: &SqlitePool, path: &Path, library: &Library, force_refresh: bool) {
     let path_str = path.to_string_lossy().to_string();
     let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
+
+    // Fast scan: only ingest new files. Skip tracks already in the library so
+    // manual metadata edits are preserved. A full refresh re-applies tag data.
+    if !force_refresh && item_exists(pool, &path_str).await {
+        return;
+    }
 
     let p = path_str.clone();
     let tags = tokio::task::spawn_blocking(move || read_audio_tags(&p))
@@ -396,7 +418,7 @@ async fn process_movie(pool: &SqlitePool, item_id: i64, file_stem: &str, force_r
     }
 }
 
-async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path: &str, library: &Library, _force_refresh: bool, cache: Arc<Mutex<ScanCache>>) {
+async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path: &str, library: &Library, force_refresh: bool, cache: Arc<Mutex<ScanCache>>) {
     let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
 
     let (series_name, season_number, episode_number) = match parse_tv_show_info(path, root_path, &library.name) {
@@ -412,9 +434,21 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
         Ok(id) => id,
         Err(e) => { tracing::warn!(error = %e, "Failed to get/create season"); return; }
     };
+    // upsert_episode keeps the hierarchy/episode number current but never
+    // overwrites an existing title, so it's safe on every scan.
     if let Err(e) = catalog::upsert_episode(pool, item_id, season_id, episode_number, &file_stem).await {
         tracing::warn!(error = %e, "Failed to upsert episode");
         return;
+    }
+
+    // Fast scan: skip re-fetching/re-applying provider metadata once this
+    // episode is already populated, so manual title/plot edits survive.
+    if !force_refresh {
+        let has_meta: Option<(Option<String>,)> = sqlx::query_as("SELECT plot FROM episodes WHERE item_id = ?")
+            .bind(item_id).fetch_optional(pool).await.unwrap_or(None);
+        if let Some((Some(plot),)) = has_meta {
+            if !plot.is_empty() { return; }
+        }
     }
 
     // Series-level metadata (cached per series name).
@@ -435,7 +469,18 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
         return;
     };
 
-    let _ = catalog::apply_series_metadata(pool, series_id, &meta).await;
+    // Only (re)apply series-level metadata when forcing or the series isn't
+    // populated yet — otherwise a new episode would clobber series edits.
+    let apply_series = if force_refresh {
+        true
+    } else {
+        let has_meta: Option<(Option<String>,)> = sqlx::query_as("SELECT poster_url FROM series WHERE id = ?")
+            .bind(series_id).fetch_optional(pool).await.unwrap_or(None);
+        !matches!(has_meta, Some((Some(_),)))
+    };
+    if apply_series {
+        let _ = catalog::apply_series_metadata(pool, series_id, &meta).await;
+    }
 
     // Episode-specific details, via the provider's per-season episode list.
     let provider_name = get_default_provider(pool).await;

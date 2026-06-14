@@ -50,7 +50,7 @@ struct TrackInfo {
 }
 
 /// Resolve lyrics for a track item id. Always returns a value (possibly empty).
-pub async fn for_track(pool: &SqlitePool, item_id: i64) -> Result<Lyrics, AppError> {
+pub async fn for_track(pool: &SqlitePool, item_id: i64, force: bool) -> Result<Lyrics, AppError> {
     let info = match track_info(pool, item_id).await? {
         Some(i) => i,
         None => return Ok(Lyrics::empty()),
@@ -58,34 +58,38 @@ pub async fn for_track(pool: &SqlitePool, item_id: i64) -> Result<Lyrics, AppErr
     let path = PathBuf::from(&info.path);
 
     // 1. Sidecar `.lrc` (synced).
-    if let Some(text) = read_sidecar(&path, "lrc").await {
-        let lines = parse_lrc(&text);
-        if !lines.is_empty() {
-            return Ok(Lyrics::from_lines(lines, "lrc"));
+    if !force {
+        if let Some(text) = read_sidecar(&path, "lrc").await {
+            let lines = parse_lrc(&text);
+            if !lines.is_empty() {
+                return Ok(Lyrics::from_lines(lines, "lrc"));
+            }
         }
-    }
 
-    // 2. Embedded tag lyrics (synced if the tag holds LRC text, else plain).
-    if let Some(text) = read_embedded(&info.path).await {
-        let lines = parse_lrc(&text);
-        if !lines.is_empty() {
-            return Ok(Lyrics::from_lines(lines, "embedded"));
+        // 2. Embedded tag lyrics (synced if the tag holds LRC text, else plain).
+        if let Some(text) = read_embedded(&info.path).await {
+            let lines = parse_lrc(&text);
+            if !lines.is_empty() {
+                return Ok(Lyrics::from_lines(lines, "embedded"));
+            }
         }
-    }
 
-    // 3. Sidecar `.txt` (plain).
-    if let Some(text) = read_sidecar(&path, "txt").await {
-        let lines = parse_plain(&text);
-        if !lines.is_empty() {
-            return Ok(Lyrics::from_lines(lines, "txt"));
+        // 3. Sidecar `.txt` (plain).
+        if let Some(text) = read_sidecar(&path, "txt").await {
+            let lines = parse_plain(&text);
+            if !lines.is_empty() {
+                return Ok(Lyrics::from_lines(lines, "txt"));
+            }
         }
     }
 
     // 4. lrclib.net, cached on disk. A reachable-but-empty answer is cached as a
     //    negative result; a transient failure (timeout/offline) is NOT cached so
     //    we retry next time instead of permanently reporting "no lyrics".
-    if let Some(cached) = read_cache(item_id).await {
-        return Ok(cached);
+    if !force {
+        if let Some(cached) = read_cache(item_id).await {
+            return Ok(cached);
+        }
     }
     match fetch_lrclib(&info).await {
         Ok(Some(lyrics)) => { write_cache(item_id, &lyrics).await; Ok(lyrics) }
