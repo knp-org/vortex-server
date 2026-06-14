@@ -90,6 +90,7 @@ pub async fn recently_added(pool: &SqlitePool) -> Result<Vec<Card>, AppError> {
             SELECT mi.id, 'movie' AS kind, mv.title, mv.poster_url, mv.year,
                    ('/api/v1/stream/' || mi.id) AS stream_url, mi.added_at AS added_at
             FROM media_items mi JOIN movies mv ON mv.item_id = mi.id
+            JOIN libraries l ON l.id = mi.library_id AND l.library_type != 'other'
             UNION ALL
             SELECT mi.id, 'music_video' AS kind, mvd.title, mvd.poster_url, mvd.year,
                    ('/api/v1/stream/' || mi.id) AS stream_url, mi.added_at

@@ -43,6 +43,7 @@ pub async fn get_continue_watching(
                 p.position, p.total_duration, p.reading_style
          FROM user_media_progress p
          JOIN media_items mi ON mi.id = p.item_id
+         JOIN libraries l ON l.id = mi.library_id AND l.library_type != 'other'
          LEFT JOIN movies mv ON mv.item_id = mi.id
          LEFT JOIN episodes e ON e.item_id = mi.id
          LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
