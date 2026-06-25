@@ -5,7 +5,9 @@ use sqlx::migrate::MigrateDatabase;
 use std::str::FromStr;
 
 pub async fn init_db() -> SqlitePool {
-    let database_url = "sqlite:vortex_server.db";
+    let cfg = crate::infrastructure::config::config();
+    let db_path = cfg.data_dir.join("vortex_server.db");
+    let database_url = format!("sqlite:{}", db_path.to_string_lossy());
 
     if !Sqlite::database_exists(database_url).await.unwrap_or(false) {
         tracing::info!(database = %database_url, "Creating database");

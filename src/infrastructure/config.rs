@@ -26,6 +26,8 @@ pub struct AppConfig {
     pub hevc_transcode_threshold_mins: f64,
     /// Maximum transcode cache size in MB (0 = unlimited, default: 5000)
     pub max_cache_size_mb: u64,
+    /// Storage directory for DB and thumbnails
+    pub data_dir: PathBuf,
 }
 
 impl Default for AppConfig {
@@ -40,6 +42,7 @@ impl Default for AppConfig {
             transcoding_hwa: None,
             hevc_transcode_threshold_mins: 15.0,
             max_cache_size_mb: 5000,
+            data_dir: PathBuf::from("/var/lib/vortex"),
         }
     }
 }
@@ -87,6 +90,10 @@ impl AppConfig {
             if let Ok(s) = size.parse() {
                 config.max_cache_size_mb = s;
             }
+        }
+
+        if let Ok(dir) = std::env::var("VORTEX_DATA_DIR") {
+            config.data_dir = PathBuf::from(dir);
         }
 
         config

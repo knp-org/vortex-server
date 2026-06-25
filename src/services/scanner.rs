@@ -345,8 +345,9 @@ async fn process_music(pool: &SqlitePool, path: &Path, library: &Library, force_
 
     // Save embedded album art once per album (best-effort).
     if let Some((bytes, ext)) = tags.cover {
-        let dir = std::path::Path::new("thumbnails");
-        if !dir.exists() { let _ = std::fs::create_dir(dir); }
+        let cfg = crate::infrastructure::config::config();
+        let dir = cfg.data_dir.join("thumbnails");
+        if !dir.exists() { let _ = std::fs::create_dir(&dir); }
         let fname = format!("album_{}.{}", album_id, ext);
         if tokio::fs::write(dir.join(&fname), &bytes).await.is_ok() {
             let _ = catalog::set_album_cover_if_empty(pool, album_id, &format!("/api/v1/images/{}", fname)).await;

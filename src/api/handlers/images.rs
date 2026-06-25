@@ -11,7 +11,8 @@ use crate::error::AppError;
 pub async fn get_image(
     Path(filename): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let images_dir = PathBuf::from("thumbnails");
+    let cfg = crate::infrastructure::config::config();
+    let images_dir = cfg.data_dir.join("thumbnails");
     let file_path = images_dir.join(&filename);
 
     if !file_path.exists() {

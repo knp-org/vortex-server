@@ -46,6 +46,31 @@ curl -sSL https://raw.githubusercontent.com/knp-org/vortex-server/main/install.s
    ```
    *Note: A valid TMDB API Key is required for fetching metadata (configured in app settings).*
 
+### Running as a Background Service (Systemd)
+To ensure Vortex Server automatically starts on boot (like Jellyfin), you can configure it as a systemd service.
+
+1. Build the release binary and move it to your system path:
+   ```bash
+   cargo build --release
+   sudo cp target/release/vortex-server /usr/local/bin/
+   ```
+2. Create the default data directory (where the DB and thumbnails are stored):
+   ```bash
+   sudo mkdir -p /var/lib/vortex
+   sudo chown -R root:root /var/lib/vortex # Or change to your desired user
+   ```
+3. Copy the provided service file and enable it:
+   ```bash
+   sudo cp vortex.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now vortex
+   ```
+4. You can check the server status at any time with:
+   ```bash
+   sudo systemctl status vortex
+   ```
+
+
 ### Client (Android)
 1. Open `android_app` in Android Studio.
 2. Sync Gradle and Run on your device/emulator.

@@ -28,16 +28,16 @@ async fn main() {
     if args.iter().any(|arg| arg == "--reset-db") {
         println!("Resetting database by deleting files...");
         
-        let _ = std::fs::remove_file("vortex_server.db");
-        let _ = std::fs::remove_file("vortex_server.db-shm");
-        let _ = std::fs::remove_file("vortex_server.db-wal");
-
         let cfg = init_config();
+        let _ = std::fs::remove_file(cfg.data_dir.join("vortex_server.db"));
+        let _ = std::fs::remove_file(cfg.data_dir.join("vortex_server.db-shm"));
+        let _ = std::fs::remove_file(cfg.data_dir.join("vortex_server.db-wal"));
+
         if cfg.transcode_dir.exists() {
             let _ = std::fs::remove_dir_all(&cfg.transcode_dir);
         }
         
-        let thumb_dir = std::path::Path::new("thumbnails");
+        let thumb_dir = cfg.data_dir.join("thumbnails");
         if thumb_dir.exists() {
             let _ = std::fs::remove_dir_all(thumb_dir);
         }

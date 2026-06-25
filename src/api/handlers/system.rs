@@ -46,7 +46,7 @@ pub async fn clear_database(State(pool): State<SqlitePool>) -> Result<StatusCode
         let _ = std::fs::remove_dir_all(&cfg.transcode_dir); // Ignore error if fails
     }
     
-    let thumb_dir = std::path::Path::new("thumbnails");
+    let thumb_dir = cfg.data_dir.join("thumbnails");
     if thumb_dir.exists() {
         let _ = std::fs::remove_dir_all(thumb_dir);
     }
@@ -55,9 +55,9 @@ pub async fn clear_database(State(pool): State<SqlitePool>) -> Result<StatusCode
     pool.close().await;
 
     // Delete the database files directly
-    let _ = std::fs::remove_file("vortex_server.db");
-    let _ = std::fs::remove_file("vortex_server.db-shm");
-    let _ = std::fs::remove_file("vortex_server.db-wal");
+    let _ = std::fs::remove_file(cfg.data_dir.join("vortex_server.db"));
+    let _ = std::fs::remove_file(cfg.data_dir.join("vortex_server.db-shm"));
+    let _ = std::fs::remove_file(cfg.data_dir.join("vortex_server.db-wal"));
 
     tracing::warn!("Database files deleted. Shutting down server for clean restart...");
     

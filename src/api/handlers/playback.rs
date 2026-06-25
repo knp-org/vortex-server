@@ -496,9 +496,10 @@ pub async fn get_thumbnail(
     }
 
     // 1. Check for cached thumbnail
-    let thumb_dir = std::path::Path::new("thumbnails");
+    let cfg = crate::infrastructure::config::config();
+    let thumb_dir = cfg.data_dir.join("thumbnails");
     if !thumb_dir.exists() {
-        let _ = std::fs::create_dir(thumb_dir);
+        let _ = std::fs::create_dir(&thumb_dir);
     }
     
     let thumb_filename = format!("{}.jpg", id);

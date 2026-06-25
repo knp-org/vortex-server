@@ -1,0 +1,16 @@
+[Unit]
+Description=Vortex Media Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# Change the ExecStart path to wherever your compiled vortex-server binary is permanently located
+ExecStart=/usr/local/bin/vortex-server
+# Optional: Set environment variables here if needed
+Environment="RUST_LOG=info"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

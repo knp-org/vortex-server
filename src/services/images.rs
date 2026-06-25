@@ -9,7 +9,8 @@ pub async fn download_image(url: &str) -> std::result::Result<Option<String>, Bo
     }
 
     // Ensure thumbnails directory exists
-    let images_dir = PathBuf::from("thumbnails");
+    let cfg = crate::infrastructure::config::config();
+    let images_dir = cfg.data_dir.join("thumbnails");
     if !images_dir.exists() {
         tokio::fs::create_dir_all(&images_dir).await?;
     }
