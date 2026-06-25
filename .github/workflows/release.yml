@@ -15,6 +15,9 @@ jobs:
   build-release:
     name: Build Release
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       matrix:
         include:
@@ -24,18 +27,21 @@ jobs:
             bin_name: vortex_server_linux_amd64
             use_cross: false
             package_deb: true
+            upload_static: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             asset_name: vortex_server_arm64.deb
             bin_name: vortex_server_linux_arm64
             use_cross: false
             package_deb: true
+            upload_static: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             asset_name: vortex_server.exe
             bin_name: vortex_server.exe
             use_cross: false
             package_deb: false
+            upload_static: false
 
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +65,6 @@ jobs:
           cache-dependency-path: vortex-client/package-lock.json
 
       - name: Build Web Client
-        shell: bash
         run: |
           cd vortex-client
           npm install
@@ -67,8 +72,6 @@ jobs:
           cd ..
           mkdir -p static
           cp -r vortex-client/dist/* static/
-
-
 
       - name: Install cargo-deb
         if: matrix.package_deb
@@ -95,7 +98,7 @@ jobs:
 
       - name: Rename Windows Binary
         if: matrix.target == 'x86_64-pc-windows-msvc'
-        run: mv target/${{ matrix.target }}/release/vortex_server.exe ${{ matrix.bin_name }}
+        run: cp target/${{ matrix.target }}/release/vortex_server.exe ${{ matrix.bin_name }}
 
       - name: Upload Deb Artifact
         if: matrix.package_deb
@@ -111,9 +114,11 @@ jobs:
           path: ${{ matrix.bin_name }}
 
       - name: Package Static Assets
+        if: matrix.upload_static
         run: tar -czvf static.tar.gz static/
 
       - name: Upload Static Artifact
+        if: matrix.upload_static
         uses: actions/upload-artifact@v4
         with:
           name: static.tar.gz
