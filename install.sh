@@ -79,6 +79,19 @@ if [ "$HAS_DPKG" = true ]; then
     
     # Clean up
     rm "$TMP_FILE"
+
+    # Ensure web UI assets are complete (deb glob may miss subdirectories)
+    echo "Downloading web UI assets..."
+    sudo mkdir -p /opt/vortex/static /opt/vortex/data
+    STATIC_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$LATEST_TAG/static.tar.gz"
+    STATIC_TMP="/tmp/static.tar.gz"
+    if command -v curl >/dev/null 2>&1; then
+        curl -SL "$STATIC_URL" -o "$STATIC_TMP"
+    else
+        wget -O "$STATIC_TMP" "$STATIC_URL"
+    fi
+    sudo tar -xzf "$STATIC_TMP" -C /opt/vortex/
+    rm "$STATIC_TMP"
 else
     ASSET_NAME="vortex_server_linux_${ARCH}"
     DOWNLOAD_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$LATEST_TAG/$ASSET_NAME"

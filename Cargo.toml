@@ -14,6 +14,7 @@ A high-performance self-hosted media server written in Rust.
 assets = [
     ["target/release/vortex_server", "usr/bin/vortex_server", "755"],
     ["static/*", "opt/vortex/static/", "644"],
+    ["static/assets/*", "opt/vortex/static/assets/", "644"],
     ["vortex_server.service", "lib/systemd/system/vortex_server.service", "644"],
 ]
 systemd-units = { enable = true }
