@@ -61,7 +61,7 @@ jobs:
       - name: Build Web Client
         run: |
           cd vortex-client
-          npm ci
+          npm install
           npm run build
           cd ..
           mkdir -p static
