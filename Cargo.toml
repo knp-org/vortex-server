@@ -1,6 +1,6 @@
 [package]
 name = "vortex_server"
-version = "0.2.14"
+version = "0.2.15"
 edition = "2021"
 default-run = "vortex_server"
 
@@ -13,8 +13,10 @@ A high-performance self-hosted media server written in Rust.
 """
 assets = [
     ["target/release/vortex_server", "usr/bin/vortex_server", "755"],
+    ["static/*", "opt/vortex/static/", "644"],
+    ["vortex_server.service", "lib/systemd/system/vortex_server.service", "644"],
 ]
-systemd-units = { enable = false }
+systemd-units = { enable = true }
 
 [dependencies]
 axum = "0.7"

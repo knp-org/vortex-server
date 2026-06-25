@@ -6,9 +6,11 @@ After=network.target
 Type=simple
 User=root
 # Change the ExecStart path to wherever your compiled vortex-server binary is permanently located
-ExecStart=/usr/local/bin/vortex-server
+WorkingDirectory=/opt/vortex
+ExecStart=/usr/bin/vortex_server
 # Optional: Set environment variables here if needed
 Environment="RUST_LOG=info"
+Environment="VORTEX_DATA_DIR=/opt/vortex/data"
 Restart=on-failure
 RestartSec=5
 

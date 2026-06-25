@@ -82,7 +82,7 @@ if [ "$HAS_DPKG" = true ]; then
 else
     ASSET_NAME="vortex_server_linux_${ARCH}"
     DOWNLOAD_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$LATEST_TAG/$ASSET_NAME"
-    INSTALL_DIR="/usr/local/bin"
+    INSTALL_DIR="/usr/bin"
     TMP_FILE="/tmp/vortex_server"
     
     echo "Downloading raw binary for $ARCH..."
@@ -92,18 +92,44 @@ else
         wget -O "$TMP_FILE" "$DOWNLOAD_URL"
     fi
     
-    echo "Installing to $INSTALL_DIR/vortex-server..."
+    echo "Installing to $INSTALL_DIR/vortex_server..."
     chmod +x "$TMP_FILE"
-    sudo mv "$TMP_FILE" "$INSTALL_DIR/vortex-server"
+    sudo mv "$TMP_FILE" "$INSTALL_DIR/vortex_server"
+
+    echo "Setting up systemd service and directories..."
+    sudo mkdir -p /opt/vortex/static
+    sudo mkdir -p /opt/vortex/data
+
+    echo "Downloading web UI..."
+    STATIC_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$LATEST_TAG/static.tar.gz"
+    STATIC_TMP="/tmp/static.tar.gz"
+    if command -v curl >/dev/null 2>&1; then
+        curl -SL "$STATIC_URL" -o "$STATIC_TMP"
+    else
+        wget -O "$STATIC_TMP" "$STATIC_URL"
+    fi
+    sudo tar -xzf "$STATIC_TMP" -C /opt/vortex/
+    sudo rm "$STATIC_TMP"
+
+    # Download the service file
+    SERVICE_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/main/vortex_server.service"
+    if command -v curl >/dev/null 2>&1; then
+        sudo curl -sL "$SERVICE_URL" -o /etc/systemd/system/vortex_server.service
+    else
+        sudo wget -qO /etc/systemd/system/vortex_server.service "$SERVICE_URL"
+    fi
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now vortex_server
 fi
 
 echo ""
 echo "============================================="
 echo "   Installation Complete!"
 echo "============================================="
-echo "You can now run Vortex Server by typing:"
-echo "    vortex-server"
+echo "Vortex Server has been installed and is now running as a background service."
+echo "You can check its status with:"
+echo "    sudo systemctl status vortex_server"
 echo ""
-echo "Or check its version:"
-echo "    vortex-server --version"
+echo "The Web UI should now be accessible at http://localhost:3000"
 echo "============================================="
