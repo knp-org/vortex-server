@@ -42,7 +42,13 @@ impl Default for AppConfig {
             transcoding_hwa: None,
             hevc_transcode_threshold_mins: 15.0,
             max_cache_size_mb: 5000,
-            data_dir: PathBuf::from("/var/lib/vortex"),
+            data_dir: dirs::data_dir()
+                .unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .map(|h| h.join(".local/share"))
+                        .unwrap_or_else(|| PathBuf::from("."))
+                })
+                .join("vortex"),
         }
     }
 }

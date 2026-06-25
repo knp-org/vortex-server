@@ -131,6 +131,9 @@ pub struct TvdbCharacter {
     #[serde(alias = "peopleName", alias = "personName")]
     pub people_name: Option<String>,
     pub image: Option<String>,
+    /// Distinguishes role type: "Actor", "Director", "Writer", "Producer", etc.
+    #[serde(alias = "peopleType", default)]
+    pub people_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

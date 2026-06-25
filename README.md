@@ -46,6 +46,18 @@ curl -sSL https://raw.githubusercontent.com/knp-org/vortex-server/main/install.s
    ```
    *Note: A valid TMDB API Key is required for fetching metadata (configured in app settings).*
 
+### Data Storage
+By default, Vortex stores its database and thumbnails in the XDG data directory:
+- **Linux:** `~/.local/share/vortex/`
+- **macOS:** `~/Library/Application Support/vortex/`
+
+The directory is created automatically on first run — no `sudo` or manual setup required.
+
+To use a custom location, set the `VORTEX_DATA_DIR` environment variable:
+```bash
+export VORTEX_DATA_DIR=/path/to/custom/data
+```
+
 ### Running as a Background Service (Systemd)
 To ensure Vortex Server automatically starts on boot (like Jellyfin), you can configure it as a systemd service.
 
@@ -54,18 +66,15 @@ To ensure Vortex Server automatically starts on boot (like Jellyfin), you can co
    cargo build --release
    sudo cp target/release/vortex-server /usr/local/bin/
    ```
-2. Create the default data directory (where the DB and thumbnails are stored):
-   ```bash
-   sudo mkdir -p /var/lib/vortex
-   sudo chown -R root:root /var/lib/vortex # Or change to your desired user
-   ```
-3. Copy the provided service file and enable it:
+2. Copy the provided service file and enable it:
    ```bash
    sudo cp vortex.service /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable --now vortex
    ```
-4. You can check the server status at any time with:
+   *The data directory (`~/.local/share/vortex/`) will be created automatically by the service. To override the location, add `Environment=VORTEX_DATA_DIR=/your/path` to the `[Service]` section of the service file.*
+
+3. You can check the server status at any time with:
    ```bash
    sudo systemctl status vortex
    ```

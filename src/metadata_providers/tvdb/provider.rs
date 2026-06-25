@@ -314,21 +314,37 @@ impl MetadataProvider for TvdbProvider {
         provider_ids.insert("tvdb".to_string(), json!(result.data.id));
 
         let mut cast_members = Vec::new();
+        let mut directors = Vec::new();
         if let Some(chars) = result.data.characters {
-            for c in chars.into_iter().take(15) {
-                let profile_url = if let Some(img) = &c.image {
-                    self.download_image(Some(img.clone())).await
-                } else {
-                    None
-                };
+            for c in chars {
+                let is_director = c.people_type.as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("Director"))
+                    .unwrap_or(false);
 
-                cast_members.push(CastMember {
-                    name: c.people_name.unwrap_or_default(),
-                    character: c.name.unwrap_or_default(),
-                    role: "actor".to_string(),
-                    profile_url,
-                    order: 0,
-                });
+                if is_director {
+                    if let Some(name) = &c.people_name {
+                        if !name.is_empty() && !directors.contains(name) {
+                            directors.push(name.clone());
+                        }
+                    }
+                } else {
+                    // Actors (and other non-director types) — cap at 15
+                    if cast_members.len() < 15 {
+                        let profile_url = if let Some(img) = &c.image {
+                            self.download_image(Some(img.clone())).await
+                        } else {
+                            None
+                        };
+
+                        cast_members.push(CastMember {
+                            name: c.people_name.unwrap_or_default(),
+                            character: c.name.unwrap_or_default(),
+                            role: "actor".to_string(),
+                            profile_url,
+                            order: 0,
+                        });
+                    }
+                }
             }
         }
         let cast = if cast_members.is_empty() { None } else { Some(cast_members) };
@@ -407,7 +423,7 @@ impl MetadataProvider for TvdbProvider {
             runtime: None,
             rating: None,
             cast,
-            director: None,
+            director: if directors.is_empty() { None } else { Some(directors) },
             tagline: None,
             status: None,
             original_language: None,

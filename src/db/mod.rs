@@ -6,15 +6,19 @@ use std::str::FromStr;
 
 pub async fn init_db() -> SqlitePool {
     let cfg = crate::infrastructure::config::config();
+
+    // Ensure the data directory exists before trying to create the database
+    std::fs::create_dir_all(&cfg.data_dir).expect("Failed to create data directory");
+
     let db_path = cfg.data_dir.join("vortex_server.db");
     let database_url = format!("sqlite:{}", db_path.to_string_lossy());
 
-    if !Sqlite::database_exists(database_url).await.unwrap_or(false) {
+    if !Sqlite::database_exists(&database_url).await.unwrap_or(false) {
         tracing::info!(database = %database_url, "Creating database");
-        Sqlite::create_database(database_url).await.unwrap();
+        Sqlite::create_database(&database_url).await.unwrap();
     }
 
-    let options = SqliteConnectOptions::from_str(database_url)
+    let options = SqliteConnectOptions::from_str(&database_url)
         .expect("Failed to parse DATABASE_URL")
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)

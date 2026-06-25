@@ -49,6 +49,7 @@ pub struct MovieDetail {
     pub genres: Vec<String>,
     pub cast: Vec<CreditDto>,
     pub stream_url: String,
+    pub file_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

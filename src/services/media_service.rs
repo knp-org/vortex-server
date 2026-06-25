@@ -163,6 +163,12 @@ pub async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail
         None => None,
     };
 
+    // Fetch the source file path and extract just the file name.
+    let file_name: Option<String> = sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM media_items WHERE id = ?"
+    ).bind(item_id).fetch_optional(pool).await?
+        .map(|p| std::path::Path::new(&p).file_name().unwrap_or_default().to_string_lossy().to_string());
+
     Ok(MovieDetail {
         id: row.item_id,
         title: row.title,
@@ -183,6 +189,7 @@ pub async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail
         genres: item_genres(pool, item_id).await?,
         cast: item_credits(pool, item_id).await?,
         stream_url: stream_url(item_id),
+        file_name,
     })
 }
 

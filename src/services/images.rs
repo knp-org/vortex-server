@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+
 
 
 /// Download an image from a URL and save it locally
