@@ -11,6 +11,7 @@ ExecStart=/usr/bin/vortex_server
 # Optional: Set environment variables here if needed
 Environment="RUST_LOG=info"
 Environment="VORTEX_DATA_DIR=/opt/vortex/data"
+Environment="VORTEX_STATIC_DIR=/opt/vortex/static"
 Restart=on-failure
 RestartSec=5
 

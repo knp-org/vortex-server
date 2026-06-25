@@ -67,8 +67,11 @@ async fn main() {
 
     // Router with static file serving and request logging
     // SPA Fallback: If file not found in static/, serve index.html
-    let serve_dir = ServeDir::new("static")
-        .not_found_service(ServeFile::new("static/index.html"));
+    let static_dir = std::env::var("VORTEX_STATIC_DIR")
+        .unwrap_or_else(|_| "static".to_string());
+    let index_path = format!("{}/index.html", &static_dir);
+    let serve_dir = ServeDir::new(&static_dir)
+        .not_found_service(ServeFile::new(&index_path));
 
     let app = app(pool)
         .nest_service("/", serve_dir)
