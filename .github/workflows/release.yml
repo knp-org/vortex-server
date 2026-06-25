@@ -59,6 +59,7 @@ jobs:
           cache-dependency-path: vortex-client/package-lock.json
 
       - name: Build Web Client
+        shell: bash
         run: |
           cd vortex-client
           npm install
