@@ -35,6 +35,8 @@ Desktop.ini
 server.log
 test_*.py
 test_*.rs
+debug_*.py
+fix_*.py
 
 # Databases
 /thumbnails

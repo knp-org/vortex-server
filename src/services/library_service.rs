@@ -4,7 +4,8 @@
 
 use sqlx::SqlitePool;
 use crate::error::AppError;
-use crate::db::models::{Library, LibraryRow, LibraryType};
+use crate::models::db::libraries::{Library, LibraryRow, LibraryType};
+use crate::models::db::library_providers::LibraryProvider;
 use crate::services::scanner::scan_media;
 
 pub struct LibraryService {
@@ -123,6 +124,42 @@ impl LibraryService {
         Ok(())
     }
 
+
+    /// The metadata providers configured for a library, ordered by priority.
+    pub async fn list_providers(&self, library_id: i64) -> Result<Vec<LibraryProvider>, AppError> {
+        Ok(sqlx::query_as::<_, LibraryProvider>(
+            "SELECT library_id, provider_id, priority, enabled FROM library_providers WHERE library_id = ? ORDER BY priority ASC"
+        )
+        .bind(library_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Replace the full set of providers for a library. Each entry is
+    /// `(provider_id, priority, enabled)`.
+    pub async fn replace_providers(&self, library_id: i64, providers: &[(String, i32, bool)]) -> Result<(), AppError> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("DELETE FROM library_providers WHERE library_id = ?")
+            .bind(library_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for (provider_id, priority, enabled) in providers {
+            sqlx::query(
+                "INSERT INTO library_providers (library_id, provider_id, priority, enabled) VALUES (?, ?, ?, ?)"
+            )
+            .bind(library_id)
+            .bind(provider_id)
+            .bind(priority)
+            .bind(enabled)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
 
     pub async fn delete(&self, id: i64) -> Result<(), AppError> {
         // `media_items`, `series`, `artists`, `albums` and `library_paths` all declare

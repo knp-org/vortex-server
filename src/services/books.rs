@@ -3,6 +3,10 @@
 //! Handles the "Books" library formats. CBZ archives are unpacked on the server
 //! so the client can request individual page images; PDF and EPUB are served as
 //! raw files and rendered client-side (pdf.js / epub.js).
+//!
+//! Stateless format utilities (a `BookFormat` enum + path/archive helpers, no DB
+//! pool), so this stays a free-function module rather than a `*Service` struct.
+//! DB-backed book reads/writes live in [`crate::services::book_service`].
 
 use crate::error::AppError;
 use std::path::Path;

@@ -294,7 +294,7 @@ impl DirectPlayProfile {
 }
 
 /// Hardware Acceleration Types supported by Jellyfin/Vortex
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HardwareAccelerationType {
     None,

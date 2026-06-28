@@ -5,9 +5,9 @@ use std::sync::OnceLock;
 use regex::Regex;
 use crate::models::db::libraries::{Library, LibraryType};
 use crate::services::library_service::LibraryService;
-use crate::services::catalog;
+use crate::services::catalog_service::CatalogService;
 use std::path::PathBuf;
-use crate::services::metadata::{fetch_metadata, fetch_episodes, get_default_provider};
+use crate::services::metadata_service::MetadataService;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -144,8 +144,52 @@ async fn cleanup_missing_files(pool: &SqlitePool, library_id: Option<i64>) {
     for (id, path_str) in rows {
         if !Path::new(&path_str).exists() {
             tracing::info!(file_path = %path_str, "Removing missing file from DB");
-            let _ = catalog::delete_item(pool, id).await;
+            let _ = CatalogService::new(pool.clone()).delete_item(id).await;
         }
+    }
+
+    // Prune orphaned grouping entities left behind after episode/track deletion.
+    // The detail rows (episodes, tracks) were cascade-deleted with media_items,
+    // but their parent series/seasons/albums/artists are independent tables.
+
+    let orphaned_seasons = sqlx::query_scalar::<_, i64>(
+        "SELECT se.id FROM seasons se
+         LEFT JOIN episodes e ON e.season_id = se.id
+         WHERE e.item_id IS NULL"
+    ).fetch_all(pool).await.unwrap_or_default();
+    for sid in &orphaned_seasons {
+        tracing::info!(season_id = %sid, "Removing orphaned season");
+        let _ = sqlx::query("DELETE FROM seasons WHERE id = ?").bind(sid).execute(pool).await;
+    }
+
+    let orphaned_series = sqlx::query_scalar::<_, i64>(
+        "SELECT s.id FROM series s
+         LEFT JOIN seasons se ON se.series_id = s.id
+         WHERE se.id IS NULL"
+    ).fetch_all(pool).await.unwrap_or_default();
+    for sid in &orphaned_series {
+        tracing::info!(series_id = %sid, "Removing orphaned series");
+        let _ = sqlx::query("DELETE FROM series WHERE id = ?").bind(sid).execute(pool).await;
+    }
+
+    let orphaned_albums = sqlx::query_scalar::<_, i64>(
+        "SELECT al.id FROM albums al
+         LEFT JOIN tracks t ON t.album_id = al.id
+         WHERE t.item_id IS NULL"
+    ).fetch_all(pool).await.unwrap_or_default();
+    for aid in &orphaned_albums {
+        tracing::info!(album_id = %aid, "Removing orphaned album");
+        let _ = sqlx::query("DELETE FROM albums WHERE id = ?").bind(aid).execute(pool).await;
+    }
+
+    let orphaned_artists = sqlx::query_scalar::<_, i64>(
+        "SELECT ar.id FROM artists ar
+         LEFT JOIN albums al ON al.artist_id = ar.id
+         WHERE al.id IS NULL"
+    ).fetch_all(pool).await.unwrap_or_default();
+    for aid in &orphaned_artists {
+        tracing::info!(artist_id = %aid, "Removing orphaned artist");
+        let _ = sqlx::query("DELETE FROM artists WHERE id = ?").bind(aid).execute(pool).await;
     }
 }
 
@@ -224,11 +268,11 @@ async fn process_book(pool: &SqlitePool, path: &Path, library: &Library, force_r
         _ => None,
     };
 
-    let item_id = match catalog::upsert_item(pool, library.id, "book", &path_str).await {
+    let item_id = match CatalogService::new(pool.clone()).upsert_item(library.id, "book", &path_str).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book item"); return; }
     };
-    if let Err(e) = catalog::upsert_book(pool, item_id, &file_stem, page_count).await {
+    if let Err(e) = CatalogService::new(pool.clone()).upsert_book(item_id, &file_stem, page_count).await {
         tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book");
     }
 }
@@ -327,19 +371,19 @@ async fn process_music(pool: &SqlitePool, path: &Path, library: &Library, force_
         .map(|s| s.to_string())
         .unwrap_or(file_stem);
 
-    let artist_id = match catalog::get_or_create_artist(pool, library.id, &artist_name).await {
+    let artist_id = match CatalogService::new(pool.clone()).get_or_create_artist(library.id, &artist_name).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(error = %e, "Failed to get/create artist"); return; }
     };
-    let album_id = match catalog::get_or_create_album(pool, artist_id, library.id, &album_title, tags.year).await {
+    let album_id = match CatalogService::new(pool.clone()).get_or_create_album(artist_id, library.id, &album_title, tags.year).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(error = %e, "Failed to get/create album"); return; }
     };
-    let item_id = match catalog::upsert_item(pool, library.id, "track", &path_str).await {
+    let item_id = match CatalogService::new(pool.clone()).upsert_item(library.id, "track", &path_str).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(error = %e, "Failed to upsert track item"); return; }
     };
-    if let Err(e) = catalog::upsert_track(pool, item_id, album_id, artist_id, tags.track, tags.disc, &track_title, tags.duration).await {
+    if let Err(e) = CatalogService::new(pool.clone()).upsert_track(item_id, album_id, artist_id, tags.track, tags.disc, &track_title, tags.duration).await {
         tracing::warn!(error = %e, "Failed to upsert track");
     }
 
@@ -350,7 +394,7 @@ async fn process_music(pool: &SqlitePool, path: &Path, library: &Library, force_
         if !dir.exists() { let _ = std::fs::create_dir(&dir); }
         let fname = format!("album_{}.{}", album_id, ext);
         if tokio::fs::write(dir.join(&fname), &bytes).await.is_ok() {
-            let _ = catalog::set_album_cover_if_empty(pool, album_id, &format!("/api/v1/images/{}", fname)).await;
+            let _ = CatalogService::new(pool.clone()).set_album_cover_if_empty(album_id, &format!("/api/v1/images/{}", fname)).await;
         }
     }
 }
@@ -365,18 +409,18 @@ async fn process_video(pool: &SqlitePool, path: &Path, root_path: &str, library:
         _ => "movie",
     };
 
-    let item_id = match catalog::upsert_item(pool, library.id, item_type, &path_str).await {
+    let item_id = match CatalogService::new(pool.clone()).upsert_item(library.id, item_type, &path_str).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(file = %file_stem, error = %e, "Failed to upsert media item"); return; }
     };
 
     match library.library_type {
         LibraryType::MusicVideos => {
-            let _ = catalog::upsert_music_video(pool, item_id, &file_stem).await;
+            let _ = CatalogService::new(pool.clone()).upsert_music_video(item_id, &file_stem).await;
             return;
         }
         LibraryType::Other => {
-            let _ = catalog::ensure_movie_stub(pool, item_id, &file_stem).await;
+            let _ = CatalogService::new(pool.clone()).ensure_movie_stub(item_id, &file_stem).await;
             return;
         }
         LibraryType::TvShows => {
@@ -403,19 +447,19 @@ async fn process_movie(pool: &SqlitePool, item_id: i64, file_stem: &str, force_r
             cached.clone()
         } else {
             drop(c);
-            let fetched = fetch_metadata(file_stem, Some("movie"), pool).await.ok();
+            let fetched = MetadataService::new(pool.clone()).fetch_metadata(file_stem, Some("movie")).await.ok();
             cache.lock().await.movie_metadata.insert(file_stem.to_string(), fetched.clone());
             fetched
         }
     };
 
     if let Some(meta) = meta {
-        if let Err(e) = catalog::apply_movie_metadata(pool, item_id, &meta).await {
+        if let Err(e) = CatalogService::new(pool.clone()).apply_movie_metadata(item_id, &meta).await {
             tracing::warn!(file = %file_stem, error = %e, "Failed to apply movie metadata");
         }
     } else {
         tracing::warn!(search_term = %file_stem, "Failed to fetch movie metadata");
-        let _ = catalog::ensure_movie_stub(pool, item_id, file_stem).await;
+        let _ = CatalogService::new(pool.clone()).ensure_movie_stub(item_id, file_stem).await;
     }
 }
 
@@ -427,17 +471,17 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
         None => (library.name.clone(), 1, 1),
     };
 
-    let series_id = match catalog::get_or_create_series(pool, library.id, &series_name).await {
+    let series_id = match CatalogService::new(pool.clone()).get_or_create_series(library.id, &series_name).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(error = %e, "Failed to get/create series"); return; }
     };
-    let season_id = match catalog::get_or_create_season(pool, series_id, season_number).await {
+    let season_id = match CatalogService::new(pool.clone()).get_or_create_season(series_id, season_number).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(error = %e, "Failed to get/create season"); return; }
     };
     // upsert_episode keeps the hierarchy/episode number current but never
     // overwrites an existing title, so it's safe on every scan.
-    if let Err(e) = catalog::upsert_episode(pool, item_id, season_id, episode_number, &file_stem).await {
+    if let Err(e) = CatalogService::new(pool.clone()).upsert_episode(item_id, season_id, episode_number, &file_stem).await {
         tracing::warn!(error = %e, "Failed to upsert episode");
         return;
     }
@@ -459,7 +503,7 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
             cached.clone()
         } else {
             drop(c);
-            let fetched = fetch_metadata(&series_name, Some("series"), pool).await.ok();
+            let fetched = MetadataService::new(pool.clone()).fetch_metadata(&series_name, Some("series")).await.ok();
             cache.lock().await.series_metadata.insert(series_name.clone(), fetched.clone());
             fetched
         }
@@ -480,11 +524,11 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
         !matches!(has_meta, Some((Some(_),)))
     };
     if apply_series {
-        let _ = catalog::apply_series_metadata(pool, series_id, &meta).await;
+        let _ = CatalogService::new(pool.clone()).apply_series_metadata(series_id, &meta).await;
     }
 
     // Episode-specific details, via the provider's per-season episode list.
-    let provider_name = get_default_provider(pool).await;
+    let provider_name = MetadataService::new(pool.clone()).get_default_provider().await;
     let Some(provider_id) = meta.provider_ids.as_ref()
         .and_then(|ids| ids.get(&provider_name))
         .and_then(|v| v.as_i64())
@@ -497,7 +541,7 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
             cached.clone()
         } else {
             drop(c);
-            let fetched = fetch_episodes(&id_str, season_number as i32, pool, None).await.ok();
+            let fetched = MetadataService::new(pool.clone()).fetch_episodes(&id_str, season_number as i32, None).await.ok();
             cache.lock().await.season_episodes.insert((id_str.clone(), season_number), fetched.clone());
             fetched
         }
@@ -505,7 +549,7 @@ async fn process_episode(pool: &SqlitePool, item_id: i64, path: &Path, root_path
 
     if let Some(episodes) = episodes {
         if let Some(ep) = episodes.iter().find(|e| e.episode_number as i64 == episode_number) {
-            let _ = catalog::apply_episode_details(pool, item_id, &ep.name, &ep.overview, ep.still_path.clone()).await;
+            let _ = CatalogService::new(pool.clone()).apply_episode_details(item_id, &ep.name, &ep.overview, ep.still_path.clone()).await;
         }
     }
 }

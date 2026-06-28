@@ -15,10 +15,9 @@ pub struct HlsGenerator {
 }
 
 impl HlsGenerator {
-    pub fn new(media_id: i64, file_path: String) -> Self {
-        let cfg = config();
-        let output_dir = cfg.transcode_dir.join(media_id.to_string());
-
+    /// `output_dir` is the job-specific cache dir (keyed by media + transcode
+    /// params), so distinct requests don't share segment files.
+    pub fn new(media_id: i64, file_path: String, output_dir: PathBuf) -> Self {
         Self {
             media_id,
             file_path,

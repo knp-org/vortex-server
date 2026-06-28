@@ -303,13 +303,22 @@ pub async fn get_hls_segment(
         _ => None,
     };
 
+    let key = crate::services::transcode::JobKey {
+        media_id: id,
+        transcode_video,
+        transcode_audio,
+        audio_stream_index,
+        max_streaming_bitrate: profile.max_streaming_bitrate,
+        hwa: profile.hardware_acceleration,
+    };
+
     if segment == "init.mp4" {
-        state.transcode.ensure_init(id, transcode_video, transcode_audio, profile, audio_stream_index).await?;
+        state.transcode.ensure_init(&key, profile).await?;
     } else if let Some(seg_num) = parse_segment_index(&segment) {
-        state.transcode.ensure_segment(id, seg_num, transcode_video, transcode_audio, profile, audio_stream_index).await?;
+        state.transcode.ensure_segment(&key, seg_num, profile).await?;
     }
 
-    let base_dir = cfg.transcode_dir.join(id.to_string());
+    let base_dir = key.cache_dir();
     let segment_path = base_dir.join(&segment);
 
     let canonical = segment_path.canonicalize().unwrap_or_default();

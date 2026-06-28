@@ -6,8 +6,9 @@ use axum::{
 };
 use sqlx::SqlitePool;
 use crate::error::AppError;
-use crate::db::models::Setting;
+use crate::models::db::settings::Setting;
 use crate::api::middleware::AuthUser;
+use crate::services::settings_service::SettingsService;
 
 #[derive(serde::Deserialize)]
 pub struct UpdateSettingRequest {
@@ -20,22 +21,14 @@ pub struct UpdateSettingRequest {
 // ---------------------------------------------------------------------------
 
 pub async fn get_settings(State(pool): State<SqlitePool>) -> Result<Json<Vec<Setting>>, AppError> {
-    let settings = sqlx::query_as::<_, Setting>("SELECT * FROM settings")
-        .fetch_all(&pool)
-        .await?;
-    Ok(Json(settings))
+    Ok(Json(SettingsService::new(pool).list_global().await?))
 }
 
 pub async fn update_setting(
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateSettingRequest>,
 ) -> Result<StatusCode, AppError> {
-    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(&payload.key)
-        .bind(&payload.value)
-        .execute(&pool)
-        .await?;
-
+    SettingsService::new(pool).upsert_global(&payload.key, &payload.value).await?;
     Ok(StatusCode::OK)
 }
 
@@ -47,11 +40,7 @@ pub async fn get_user_settings(
     State(pool): State<SqlitePool>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<Setting>>, AppError> {
-    let settings = sqlx::query_as::<_, Setting>("SELECT key, value FROM user_settings WHERE user_id = ?")
-        .bind(user.id)
-        .fetch_all(&pool)
-        .await?;
-    Ok(Json(settings))
+    Ok(Json(SettingsService::new(pool).list_for_user(user.id).await?))
 }
 
 pub async fn update_user_setting(
@@ -59,15 +48,6 @@ pub async fn update_user_setting(
     Extension(user): Extension<AuthUser>,
     Json(payload): Json<UpdateSettingRequest>,
 ) -> Result<StatusCode, AppError> {
-    sqlx::query(
-        "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
-         ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value"
-    )
-        .bind(user.id)
-        .bind(&payload.key)
-        .bind(&payload.value)
-        .execute(&pool)
-        .await?;
-
+    SettingsService::new(pool).upsert_for_user(user.id, &payload.key, &payload.value).await?;
     Ok(StatusCode::OK)
 }

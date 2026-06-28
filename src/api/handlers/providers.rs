@@ -13,6 +13,7 @@ use crate::error::AppError;
 use crate::metadata_providers::manifest::{FieldType, ProviderManifest};
 use crate::metadata_providers::registry;
 use crate::models::db::provider_configs::ProviderConfig;
+use crate::services::provider_configs_service::ProviderConfigsService;
 
 // ── Response types ─────────────────────────────────────────────────────
 
@@ -71,12 +72,10 @@ pub struct ReorderRequest {
 pub async fn list_providers(
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<ProviderInfo>>, AppError> {
-    let configs: Vec<ProviderConfig> = sqlx::query_as(
-        "SELECT provider_id, enabled, priority, config_json FROM provider_configs"
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap_or_default();
+    let configs: Vec<ProviderConfig> = ProviderConfigsService::new(pool)
+        .list_all()
+        .await
+        .unwrap_or_default();
 
     let mut result = Vec::new();
 
@@ -106,12 +105,7 @@ pub async fn get_provider_config(
     let manifest = registry::manifest(&id)
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 
-    let config: Option<ProviderConfig> = sqlx::query_as(
-        "SELECT provider_id, enabled, priority, config_json FROM provider_configs WHERE provider_id = ?"
-    )
-    .bind(&id)
-    .fetch_optional(&pool)
-    .await?;
+    let config = ProviderConfigsService::new(pool).get(&id).await?;
 
     let (enabled, priority, config_json) = match config {
         Some(c) => {
@@ -156,13 +150,10 @@ pub async fn update_provider_config(
     let manifest = registry::manifest(&id)
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 
+    let service = ProviderConfigsService::new(pool.clone());
+
     // Load existing config to merge secrets
-    let existing: Option<ProviderConfig> = sqlx::query_as(
-        "SELECT provider_id, enabled, priority, config_json FROM provider_configs WHERE provider_id = ?"
-    )
-    .bind(&id)
-    .fetch_optional(&pool)
-    .await?;
+    let existing = service.get(&id).await?;
 
     let existing_json: serde_json::Value = existing.as_ref()
         .and_then(|c| serde_json::from_str(&c.config_json).ok())
@@ -190,17 +181,7 @@ pub async fn update_provider_config(
     let priority = existing.as_ref().map(|c| c.priority).unwrap_or(100);
     let enabled = existing.as_ref().map(|c| c.enabled).unwrap_or(true);
 
-    sqlx::query(
-        "INSERT INTO provider_configs (provider_id, enabled, priority, config_json) VALUES (?, ?, ?, ?)
-         ON CONFLICT(provider_id) DO UPDATE SET config_json = ?"
-    )
-    .bind(&id)
-    .bind(enabled)
-    .bind(priority)
-    .bind(&config_str)
-    .bind(&config_str)
-    .execute(&pool)
-    .await?;
+    service.upsert_config(&id, enabled, priority, &config_str).await?;
 
     // Return the masked version
     get_provider_config(Path(id), State(pool)).await
@@ -217,15 +198,7 @@ pub async fn toggle_provider(
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 
     // Ensure the provider has a row in the DB
-    sqlx::query(
-        "INSERT INTO provider_configs (provider_id, enabled, priority, config_json) VALUES (?, ?, 100, '{}')
-         ON CONFLICT(provider_id) DO UPDATE SET enabled = ?"
-    )
-    .bind(&id)
-    .bind(payload.enabled)
-    .bind(payload.enabled)
-    .execute(&pool)
-    .await?;
+    ProviderConfigsService::new(pool).set_enabled(&id, payload.enabled).await?;
 
     Ok(Json(serde_json::json!({
         "provider_id": id,
@@ -239,18 +212,10 @@ pub async fn reorder_providers(
     State(pool): State<SqlitePool>,
     Json(payload): Json<ReorderRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let service = ProviderConfigsService::new(pool);
     for (i, provider_id) in payload.order.iter().enumerate() {
         let priority = ((i + 1) * 10) as i32;
-
-        sqlx::query(
-            "INSERT INTO provider_configs (provider_id, enabled, priority, config_json) VALUES (?, 1, ?, '{}')
-             ON CONFLICT(provider_id) DO UPDATE SET priority = ?"
-        )
-        .bind(provider_id)
-        .bind(priority)
-        .bind(priority)
-        .execute(&pool)
-        .await?;
+        service.set_priority(provider_id, priority).await?;
     }
 
     Ok(Json(serde_json::json!({ "status": "ok" })))
@@ -269,12 +234,7 @@ pub async fn test_provider(
         .ok_or_else(|| AppError::NotFound(format!("No factory for provider: {}", id)))?;
 
     // Load config from DB
-    let config: Option<ProviderConfig> = sqlx::query_as(
-        "SELECT provider_id, enabled, priority, config_json FROM provider_configs WHERE provider_id = ?"
-    )
-    .bind(&id)
-    .fetch_optional(&pool)
-    .await?;
+    let config = ProviderConfigsService::new(pool).get(&id).await?;
 
     let config_json: serde_json::Value = config
         .and_then(|c| serde_json::from_str(&c.config_json).ok())

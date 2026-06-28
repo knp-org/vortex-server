@@ -49,9 +49,20 @@ struct TrackInfo {
     duration: Option<i64>,
 }
 
-/// Resolve lyrics for a track item id. Always returns a value (possibly empty).
-pub async fn for_track(pool: &SqlitePool, item_id: i64, force: bool) -> Result<Lyrics, AppError> {
-    let info = match track_info(pool, item_id).await? {
+/// Resolves lyrics for music tracks from sidecar files, embedded tags, and lrclib.
+pub struct LyricsService {
+    pool: SqlitePool,
+}
+
+impl LyricsService {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Resolve lyrics for a track item id. Always returns a value (possibly empty).
+    pub async fn for_track(&self, item_id: i64, force: bool) -> Result<Lyrics, AppError> {
+        let pool = &self.pool;
+        let info = match track_info(pool, item_id).await? {
         Some(i) => i,
         None => return Ok(Lyrics::empty()),
     };
@@ -99,6 +110,7 @@ pub async fn for_track(pool: &SqlitePool, item_id: i64, force: bool) -> Result<L
             Ok(empty)
         }
         Err(()) => Ok(Lyrics::empty()),
+        }
     }
 }
 

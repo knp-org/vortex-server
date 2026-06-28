@@ -1,5 +1,3 @@
-pub mod models;
-
 use sqlx::sqlite::{Sqlite, SqlitePool, SqlitePoolOptions, SqliteConnectOptions};
 use sqlx::migrate::MigrateDatabase;
 use std::str::FromStr;

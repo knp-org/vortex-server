@@ -1,5 +1,6 @@
 
-
+//! Stateless image helper. Kept as a free function (no DB pool / shared state),
+//! so it is not a `*Service` struct like the data-access services.
 
 /// Download an image from a URL and save it locally
 /// Returns the filename of the saved image

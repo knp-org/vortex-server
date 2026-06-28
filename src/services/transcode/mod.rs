@@ -8,4 +8,4 @@ pub mod stream_builder;
 mod ffmpeg;
 mod service;
 
-pub use service::TranscodeService;
+pub use service::{TranscodeService, JobKey};

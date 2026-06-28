@@ -5,21 +5,31 @@ use crate::models::db::provider_configs::ProviderConfig;
 use sqlx::SqlitePool;
 use crate::error::AppError;
 
+/// Default provider if not configured in settings
+const DEFAULT_PROVIDER: &str = "tmdb";
+
 /// MetadataService resolves the ordered, enabled provider chain and runs
-/// search/fetch with fallback. It replaces the old hardcoded match/factory.
-pub struct MetadataService;
+/// search/fetch with fallback.
+pub struct MetadataService {
+    pool: SqlitePool,
+}
 
 impl MetadataService {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
     /// Build the ordered chain of enabled providers.
     ///
     /// Reads `provider_configs` from DB, filters to enabled providers,
     /// optionally filters by `media_type`, sorts by priority (ascending),
     /// and constructs each provider via its registry factory + stored config.
-    pub async fn chain(
-        pool: &SqlitePool,
+    async fn chain(
+        &self,
         library_id: Option<i64>,
         media_type: Option<&str>,
     ) -> Result<Vec<Box<dyn MetadataProvider>>, AppError> {
+        let pool = &self.pool;
         // Read all provider configs from DB, ordered by priority
         let mut configs: Vec<ProviderConfig> = Vec::new();
 
@@ -119,10 +129,10 @@ impl MetadataService {
         Ok(providers)
     }
 
-    /// Search using the provider chain with fallback.
+    /// Search using the provider chain with fallback, scoped to an optional library.
     /// Iterates providers in priority order; first successful result wins.
-    pub async fn search(
-        pool: &SqlitePool,
+    async fn search_chain(
+        &self,
         query: &str,
         year: Option<String>,
         media_type: Option<&str>,
@@ -131,7 +141,7 @@ impl MetadataService {
         let (clean_query, extracted_year) = extract_year(query);
         let final_year = year.or(extracted_year);
 
-        let chain = Self::chain(pool, library_id, media_type).await?;
+        let chain = self.chain(library_id, media_type).await?;
 
         if chain.is_empty() {
             return Err(AppError::BadRequest("No metadata providers are configured and enabled".into()));
@@ -152,83 +162,122 @@ impl MetadataService {
         Err(AppError::NotFound("No results found from any provider".into()))
     }
 
-    /// Fetch details from a specific provider by its id.
-    /// Used by the Identify flow where the user has already chosen a provider result.
-    #[allow(dead_code)]
-    pub async fn fetch_details(
-        pool: &SqlitePool,
-        _provider_id_str: &str,
-        _media_type: Option<&str>,
-    ) -> Result<Box<dyn MetadataProvider>, AppError> {
-        // Try to find this provider in the configured chain
-        let chain = Self::chain(pool, None, None).await?;
-        for provider in chain {
-            // Return the first available provider (in v1 we only have one)
-            return Ok(provider);
-        }
-
-        Err(AppError::BadRequest("No providers available".into()))
-    }
-}
-
-// ── Backward-compatible wrapper functions ──────────────────────────────
-// These preserve the existing public API so call sites in media.rs,
-// tv.rs, and scanner.rs compile without changes.
-
-/// Default provider if not configured in settings
-const DEFAULT_PROVIDER: &str = "tmdb";
-
-/// Get the configured default provider from settings, or use DEFAULT_PROVIDER.
-/// Now also considers the highest-priority enabled provider from provider_configs.
-pub async fn get_default_provider(pool: &SqlitePool) -> String {
-    // First try the new provider_configs table
-    let result: Option<(String,)> = sqlx::query_as(
-        "SELECT provider_id FROM provider_configs WHERE enabled = 1 ORDER BY priority ASC LIMIT 1"
-    )
-    .fetch_optional(pool)
-    .await
-    .unwrap_or(None);
-
-    if let Some((id,)) = result {
-        return id;
+    /// Search using the provider chain (no library scoping).
+    pub async fn search(
+        &self,
+        query: &str,
+        year: Option<String>,
+        media_type: Option<&str>,
+    ) -> Result<Vec<NormalizedMetadata>, AppError> {
+        self.search_chain(query, year, media_type, None).await
     }
 
-    // Fall back to legacy settings
-    let result: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'metadata_provider'")
-        .fetch_optional(pool)
+    /// Get the configured default provider: the highest-priority enabled provider
+    /// from `provider_configs`, then the legacy `settings` value, then `tmdb`.
+    pub async fn get_default_provider(&self) -> String {
+        // First try the new provider_configs table
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT provider_id FROM provider_configs WHERE enabled = 1 ORDER BY priority ASC LIMIT 1"
+        )
+        .fetch_optional(&self.pool)
         .await
         .unwrap_or(None);
-    result.map(|r| r.0).unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
-}
 
-/// Get a provider instance by name — now uses the registry + DB config.
-pub async fn get_provider(pool: &SqlitePool, provider: &str) -> Result<Box<dyn MetadataProvider>, AppError> {
-    // Try to load config from DB first
-    let config: Option<ProviderConfig> = sqlx::query_as(
-        "SELECT provider_id, enabled, priority, config_json FROM provider_configs WHERE provider_id = ?"
-    )
-    .bind(provider)
-    .fetch_optional(pool)
-    .await
-    .unwrap_or(None);
+        if let Some((id,)) = result {
+            return id;
+        }
 
-    if let Some(cfg) = config {
-        let config_json: serde_json::Value = serde_json::from_str(&cfg.config_json)
-            .unwrap_or(serde_json::json!({}));
+        // Fall back to legacy settings
+        let result: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'metadata_provider'")
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+        result.map(|r| r.0).unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
+    }
 
-        if let Some(factory) = registry::factory(provider) {
-            return factory(&config_json);
+    /// Get a provider instance by name, using the registry + stored DB config.
+    pub async fn get_provider(&self, provider: &str) -> Result<Box<dyn MetadataProvider>, AppError> {
+        // Try to load config from DB first
+        let config: Option<ProviderConfig> = sqlx::query_as(
+            "SELECT provider_id, enabled, priority, config_json FROM provider_configs WHERE provider_id = ?"
+        )
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap_or(None);
+
+        if let Some(cfg) = config {
+            let config_json: serde_json::Value = serde_json::from_str(&cfg.config_json)
+                .unwrap_or(serde_json::json!({}));
+
+            if let Some(factory) = registry::factory(provider) {
+                return factory(&config_json);
+            }
+        }
+
+        // Legacy fallback for TMDB
+        if provider == "tmdb" {
+            use crate::metadata_providers::tmdb::TmdbProvider;
+            let api_key = TmdbProvider::fetch_api_key(&self.pool).await?;
+            return Ok(Box::new(TmdbProvider::new(api_key)));
+        }
+
+        Err(AppError::BadRequest(format!("Unknown provider: {}", provider)))
+    }
+
+    /// Fetch metadata using the provider chain, resolving to full details by id
+    /// when the top result carries a provider id.
+    pub async fn fetch_metadata(
+        &self,
+        query: &str,
+        media_type_hint: Option<&str>,
+    ) -> Result<NormalizedMetadata, AppError> {
+        let results = self.search_chain(query, None, media_type_hint, None).await?;
+
+        if let Some(first) = results.first() {
+            if let Some(ids) = &first.provider_ids {
+                // Pick the first provider ID we have for it
+                if let Some((provider_name, val)) = ids.as_object().and_then(|m| m.iter().next()) {
+                    if let Some(id) = val.as_i64().map(|i| i.to_string()).or_else(|| val.as_str().map(|s| s.to_string())) {
+                        return Ok(self.fetch_by_id(&id, first.media_type.as_deref(), Some(provider_name)).await?);
+                    }
+                }
+            }
+            Ok(first.clone())
+        } else {
+            Err(AppError::NotFound("No results found".into()))
         }
     }
 
-    // Legacy fallback for TMDB
-    if provider == "tmdb" {
-        use crate::metadata_providers::tmdb::TmdbProvider;
-        let api_key = TmdbProvider::fetch_api_key(pool).await?;
-        return Ok(Box::new(TmdbProvider::new(api_key)));
+    /// Fetch by ID using a specific provider (if given) or the default.
+    pub async fn fetch_by_id(
+        &self,
+        provider_id: &str,
+        media_type: Option<&str>,
+        provider_name: Option<&str>,
+    ) -> Result<NormalizedMetadata, AppError> {
+        let name = match provider_name {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => self.get_default_provider().await,
+        };
+        let provider = self.get_provider(&name).await?;
+        Ok(provider.get_details(provider_id, media_type).await?)
     }
 
-    Err(AppError::BadRequest(format!("Unknown provider: {}", provider)))
+    /// Fetch episodes using a specific provider (if given) or the default.
+    pub async fn fetch_episodes(
+        &self,
+        series_provider_id: &str,
+        season_number: i32,
+        provider_name: Option<&str>,
+    ) -> Result<Vec<EpisodeMetadata>, AppError> {
+        let name = match provider_name {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => self.get_default_provider().await,
+        };
+        let provider = self.get_provider(&name).await?;
+        Ok(provider.get_season_episodes(series_provider_id, season_number).await?)
+    }
 }
 
 fn extract_year(query: &str) -> (String, Option<String>) {
@@ -242,67 +291,3 @@ fn extract_year(query: &str) -> (String, Option<String>) {
     }
     (query.to_string(), None)
 }
-
-/// Fetch metadata using the provider chain
-pub async fn fetch_metadata(
-    query: &str,
-    media_type_hint: Option<&str>,
-    pool: &SqlitePool
-) -> Result<NormalizedMetadata, AppError> {
-    let results = MetadataService::search(pool, query, None, media_type_hint, None).await?;
-    
-    if let Some(first) = results.first() {
-        if let Some(ids) = &first.provider_ids {
-            // Pick the first provider ID we have for it
-            if let Some((provider_name, val)) = ids.as_object().and_then(|m| m.iter().next()) {
-                if let Some(id) = val.as_i64().map(|i| i.to_string()).or_else(|| val.as_str().map(|s| s.to_string())) {
-                    return Ok(fetch_by_id(&id, first.media_type.as_deref(), pool, Some(provider_name)).await?);
-                }
-            }
-        }
-        Ok(first.clone())
-    } else {
-        Err(AppError::NotFound("No results found".into()))
-    }
-}
-
-/// Search using the provider chain
-pub async fn search(
-    query: &str,
-    year: Option<String>,
-    media_type: Option<&str>,
-    pool: &SqlitePool
-) -> Result<Vec<NormalizedMetadata>, AppError> {
-    MetadataService::search(pool, query, year, media_type, None).await
-}
-
-/// Fetch by ID using a specific provider (if given) or the default.
-pub async fn fetch_by_id(
-    provider_id: &str,
-    media_type: Option<&str>,
-    pool: &SqlitePool,
-    provider_name: Option<&str>,
-) -> Result<NormalizedMetadata, AppError> {
-    let name = match provider_name {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => get_default_provider(pool).await,
-    };
-    let provider = get_provider(pool, &name).await?;
-    Ok(provider.get_details(provider_id, media_type).await?)
-}
-
-/// Fetch episodes using a specific provider (if given) or the default.
-pub async fn fetch_episodes(
-    series_provider_id: &str,
-    season_number: i32,
-    pool: &SqlitePool,
-    provider_name: Option<&str>,
-) -> Result<Vec<EpisodeMetadata>, AppError> {
-    let name = match provider_name {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => get_default_provider(pool).await,
-    };
-    let provider = get_provider(pool, &name).await?;
-    Ok(provider.get_season_episodes(series_provider_id, season_number).await?)
-}
-

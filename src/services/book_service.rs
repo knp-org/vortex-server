@@ -1,7 +1,7 @@
 //! Book repository / service.
 //!
 //! Owns reads/updates for [`Book`] items over `media_items` + `books`. Scanning goes
-//! through [`crate::services::catalog::upsert_book`]; file/format operations (zip
+//! through [`crate::services::catalog_service::CatalogService::upsert_book`]; file/format operations (zip
 //! extraction, page counting) live in [`crate::services::books`].
 
 use sqlx::SqlitePool;

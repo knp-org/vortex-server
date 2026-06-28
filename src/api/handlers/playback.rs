@@ -11,6 +11,8 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use serde::Serialize;
 use crate::error::AppError;
 use crate::api::middleware::AuthUser;
+use crate::services::media_service;
+use crate::services::progress_service::ProgressService;
 
 #[derive(serde::Deserialize)]
 pub struct UpdateProgressRequest {
@@ -36,28 +38,18 @@ pub async fn get_continue_watching(
     State(pool): State<SqlitePool>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<ContinueItem>>, AppError> {
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, i64, i64, Option<String>)>(
-        "SELECT mi.id, mi.item_type,
-                COALESCE(mv.title, e.title, mvd.title) AS title,
-                COALESCE(mv.poster_url, e.still_url, mvd.poster_url) AS poster_url,
-                p.position, p.total_duration, p.reading_style
-         FROM user_media_progress p
-         JOIN media_items mi ON mi.id = p.item_id
-         JOIN libraries l ON l.id = mi.library_id AND l.library_type != 'other'
-         LEFT JOIN movies mv ON mv.item_id = mi.id
-         LEFT JOIN episodes e ON e.item_id = mi.id
-         LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
-         WHERE p.user_id = ? AND p.position > 10 AND p.position < (p.total_duration * 0.95)
-         ORDER BY p.last_watched DESC LIMIT 10"
-    )
-    .bind(user.id)
-    .fetch_all(&pool)
-    .await?;
+    let rows = ProgressService::new(pool).continue_watching(user.id).await?;
 
     let items = rows.into_iter()
-        .map(|(id, kind, title, poster_url, position, total_duration, reading_style)| ContinueItem {
-            id, kind, title, poster_url, position, total_duration, reading_style,
-            stream_url: format!("/api/v1/stream/{}", id),
+        .map(|r| ContinueItem {
+            id: r.id,
+            kind: r.item_type,
+            title: r.title,
+            poster_url: r.poster_url,
+            position: r.position,
+            total_duration: r.total_duration,
+            reading_style: r.reading_style,
+            stream_url: format!("/api/v1/stream/{}", r.id),
         })
         .collect();
 
@@ -70,22 +62,9 @@ pub async fn update_progress(
     Extension(user): Extension<AuthUser>,
     Json(payload): Json<UpdateProgressRequest>,
 ) -> Result<StatusCode, AppError> {
-    sqlx::query(
-        "INSERT INTO user_media_progress (user_id, item_id, position, total_duration, reading_style, last_watched)
-         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-         ON CONFLICT(user_id, item_id) DO UPDATE SET
-            position = excluded.position,
-            total_duration = excluded.total_duration,
-            reading_style = COALESCE(excluded.reading_style, user_media_progress.reading_style),
-            last_watched = CURRENT_TIMESTAMP"
-    )
-    .bind(user.id)
-    .bind(id)
-    .bind(payload.position)
-    .bind(payload.total_duration)
-    .bind(&payload.reading_style)
-    .execute(&pool)
-    .await?;
+    ProgressService::new(pool)
+        .update(user.id, id, payload.position, payload.total_duration, payload.reading_style.as_deref())
+        .await?;
 
     Ok(StatusCode::OK)
 }
@@ -95,15 +74,7 @@ pub async fn get_media_progress(
     State(pool): State<SqlitePool>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let row: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT position, reading_style FROM user_media_progress WHERE user_id = ? AND item_id = ?"
-    )
-        .bind(user.id)
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?;
-
-    let (position, style) = row.unwrap_or((0, None));
+    let (position, style) = ProgressService::new(pool).get(user.id, id).await?;
 
     Ok(Json(serde_json::json!({
         "position": position,
@@ -117,16 +88,10 @@ pub async fn stream_video(
     method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
+    let file_path = media_service::MediaService::new(pool.clone()).file_path(id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let file_path = match result {
-        Some((path,)) => path,
-        None => return Err(StatusCode::NOT_FOUND),
-    };
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     let mut file = File::open(&file_path).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let metadata = file.metadata().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -223,15 +188,7 @@ pub async fn get_audio_tracks(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<AudioTrack>>, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?;
-
-    let file_path = match result {
-        Some((path,)) => path,
-        None => return Err(AppError::NotFound("Media not found".to_string())),
-    };
+    let file_path = media_service::MediaService::new(pool.clone()).require_file_path(id).await?;
 
     let probe = crate::services::transcode::codecs::probe_media(&file_path).await?;
 
@@ -282,14 +239,7 @@ pub async fn get_media_info(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<crate::models::db::media_info::MediaInfo>, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?;
-
-    let file_path = result
-        .map(|(p,)| p)
-        .ok_or_else(|| AppError::NotFound("Media not found".to_string()))?;
+    let file_path = media_service::MediaService::new(pool.clone()).require_file_path(id).await?;
 
     let probe = crate::services::transcode::codecs::probe_media(&file_path).await?;
     Ok(Json(probe.media_info))
@@ -308,15 +258,7 @@ pub async fn get_subtitles(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<SubtitleTrack>>, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?;
-
-    let file_path = match result {
-        Some((path,)) => path,
-        None => return Err(AppError::NotFound("Media not found".to_string())),
-    };
+    let file_path = media_service::MediaService::new(pool.clone()).require_file_path(id).await?;
 
     let file_path_buf = std::path::PathBuf::from(&file_path);
     let parent_dir = file_path_buf.parent().ok_or(AppError::Internal("Invalid file path".to_string()))?;
@@ -392,15 +334,7 @@ pub async fn stream_subtitle(
     State(pool): State<SqlitePool>,
 ) -> Result<impl IntoResponse, AppError> {
     // 1. Get Media Path to verify security/locality
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?;
-
-    let media_path = match result {
-        Some((path,)) => std::path::PathBuf::from(path),
-        None => return Err(AppError::NotFound("Media not found".to_string())),
-    };
+    let media_path = std::path::PathBuf::from(media_service::MediaService::new(pool.clone()).require_file_path(id).await?);
 
     let parent_dir = media_path.parent().ok_or(AppError::Internal("Invalid file path".to_string()))?;
     let subtitle_path = parent_dir.join(&filename);
@@ -442,15 +376,7 @@ pub async fn stream_embedded_subtitle(
     Path((id, stream_index)): Path<(i64, i32)>,
     State(pool): State<SqlitePool>,
 ) -> Result<impl IntoResponse, AppError> {
-    let result: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await?;
-
-    let file_path = match result {
-        Some((path,)) => path,
-        None => return Err(AppError::NotFound("Media not found".to_string())),
-    };
+    let file_path = media_service::MediaService::new(pool.clone()).require_file_path(id).await?;
 
     let output = tokio::process::Command::new("ffmpeg")
         .args([
@@ -507,24 +433,9 @@ pub async fn get_thumbnail(
 
     if !thumb_path.exists() {
         // 2. Get media file path and metadata
-        let result: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT mi.file_path,
-                    COALESCE(mv.poster_url, e.still_url, mvd.poster_url) AS poster_url,
-                    mv.backdrop_url AS backdrop_url
-             FROM media_items mi
-             LEFT JOIN movies mv ON mv.item_id = mi.id
-             LEFT JOIN episodes e ON e.item_id = mi.id
-             LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
-             WHERE mi.id = ?"
-        )
-            .bind(id)
-            .fetch_optional(&pool)
-            .await?;
-
-        let (file_path, poster_url, backdrop_url) = match result {
-            Some(row) => row,
-            None => return Err(AppError::NotFound("Media not found".to_string())),
-        };
+        let (file_path, poster_url, backdrop_url) = media_service::MediaService::new(pool.clone()).thumbnail_sources(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Media not found".to_string()))?;
 
         // 3. Try validation/download from metadata
         let mut generated = false;

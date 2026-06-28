@@ -81,6 +81,14 @@ async fn main() {
     println!("Vortex Server listening on http://{}", addr);
     println!("To connect from other devices, use your machine's local IP address (e.g., http://192.168.x.x:{})", cfg.server_port);
     
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        eprintln!("ERROR: Failed to bind to {}: {}", addr, e);
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            eprintln!("Port {} is already in use. Check for duplicate services or stale processes:", cfg.server_port);
+            eprintln!("  sudo fuser -k {}/tcp", cfg.server_port);
+            eprintln!("  sudo systemctl list-units '*vortex*' --all");
+        }
+        std::process::exit(1);
+    });
     axum::serve(listener, app).await.unwrap();
 }

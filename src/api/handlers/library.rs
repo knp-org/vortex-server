@@ -5,7 +5,7 @@ use axum::{
 };
 use sqlx::SqlitePool;
 use crate::error::AppError;
-use crate::db::models::{Library, LibraryType};
+use crate::models::db::libraries::{Library, LibraryType};
 use crate::services::scanner::scan_media;
 use super::common::{ListDirectoriesRequest, DirectoryEntry};
 use std::path::Path as StdPath;
@@ -175,13 +175,7 @@ pub async fn get_library_providers(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<LibraryProvider>>, AppError> {
-    let providers: Vec<LibraryProvider> = sqlx::query_as(
-        "SELECT library_id, provider_id, priority, enabled FROM library_providers WHERE library_id = ? ORDER BY priority ASC"
-    )
-    .bind(id)
-    .fetch_all(&pool)
-    .await?;
-
+    let providers = LibraryService::new(pool).list_providers(id).await?;
     Ok(Json(providers))
 }
 
@@ -190,27 +184,11 @@ pub async fn update_library_providers(
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateLibraryProvidersRequest>,
 ) -> Result<StatusCode, AppError> {
-    let mut tx = pool.begin().await?;
-
-    sqlx::query("DELETE FROM library_providers WHERE library_id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-
-    for p in payload.providers {
-        sqlx::query(
-            "INSERT INTO library_providers (library_id, provider_id, priority, enabled) VALUES (?, ?, ?, ?)"
-        )
-        .bind(id)
-        .bind(p.provider_id)
-        .bind(p.priority)
-        .bind(p.enabled)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    tx.commit().await?;
-
+    let providers: Vec<(String, i32, bool)> = payload.providers
+        .into_iter()
+        .map(|p| (p.provider_id, p.priority, p.enabled))
+        .collect();
+    LibraryService::new(pool).replace_providers(id, &providers).await?;
     Ok(StatusCode::OK)
 }
 

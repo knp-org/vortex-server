@@ -1,12 +1,97 @@
 //! Read layer over the per-type catalog tables.
 //!
 //! Assembles the response DTOs (cards, detail views) the API returns. All writes go
-//! through [`crate::services::catalog`]; this module only reads.
+//! through [`crate::services::catalog_service`]; this module only reads.
 
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::db::libraries::LibraryType;
 use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, MusicVideoDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail};
+
+/// Read layer over the per-type catalog tables. The free functions below are the
+/// internal query layer; this struct is the public entry point.
+pub struct MediaService {
+    pool: SqlitePool,
+}
+
+impl MediaService {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn list_library(&self, library_id: i64, library_type: &LibraryType) -> Result<Vec<Card>, AppError> {
+        list_library(&self.pool, library_id, library_type).await
+    }
+    pub async fn recently_added(&self) -> Result<Vec<Card>, AppError> {
+        recently_added(&self.pool).await
+    }
+    pub async fn search(&self, query: &str) -> Result<Vec<Card>, AppError> {
+        search(&self.pool, query).await
+    }
+    pub async fn movie_detail(&self, item_id: i64) -> Result<MovieDetail, AppError> {
+        movie_detail(&self.pool, item_id).await
+    }
+    pub async fn music_video_detail(&self, item_id: i64) -> Result<MusicVideoDetail, AppError> {
+        music_video_detail(&self.pool, item_id).await
+    }
+    pub async fn series_cards(&self, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+        series_cards(&self.pool, library_id).await
+    }
+    pub async fn series_detail(&self, series_id: i64) -> Result<SeriesDetail, AppError> {
+        series_detail(&self.pool, series_id).await
+    }
+    pub async fn series_seasons(&self, series_id: i64) -> Result<Vec<SeasonDto>, AppError> {
+        series_seasons(&self.pool, series_id).await
+    }
+    pub async fn season_episodes(&self, series_id: i64, season_number: i64) -> Result<Vec<EpisodeDto>, AppError> {
+        season_episodes(&self.pool, series_id, season_number).await
+    }
+    pub async fn episode_detail(&self, item_id: i64) -> Result<EpisodeDto, AppError> {
+        episode_detail(&self.pool, item_id).await
+    }
+    pub async fn book_detail(&self, item_id: i64) -> Result<BookDetail, AppError> {
+        book_detail(&self.pool, item_id).await
+    }
+    pub async fn artist_cards(&self, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+        artist_cards(&self.pool, library_id).await
+    }
+    pub async fn library_tracks(&self, library_id: i64) -> Result<Vec<TrackDto>, AppError> {
+        library_tracks(&self.pool, library_id).await
+    }
+    pub async fn artist_detail(&self, artist_id: i64) -> Result<ArtistDetail, AppError> {
+        artist_detail(&self.pool, artist_id).await
+    }
+    pub async fn album_detail(&self, album_id: i64) -> Result<AlbumDetail, AppError> {
+        album_detail(&self.pool, album_id).await
+    }
+    pub async fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<TrackDto>, AppError> {
+        playlist_tracks(&self.pool, playlist_id).await
+    }
+    pub async fn movie_provider_lookup(&self, item_id: i64) -> Result<(Option<String>, Option<String>), AppError> {
+        movie_provider_lookup(&self.pool, item_id).await
+    }
+    pub async fn file_path(&self, id: i64) -> Result<Option<String>, AppError> {
+        file_path(&self.pool, id).await
+    }
+    pub async fn require_file_path(&self, id: i64) -> Result<String, AppError> {
+        require_file_path(&self.pool, id).await
+    }
+    pub async fn thumbnail_sources(&self, id: i64) -> Result<Option<(String, Option<String>, Option<String>)>, AppError> {
+        thumbnail_sources(&self.pool, id).await
+    }
+    pub async fn item_type(&self, id: i64) -> Result<String, AppError> {
+        item_type(&self.pool, id).await
+    }
+    pub async fn track_album_id(&self, item_id: i64) -> Result<Option<i64>, AppError> {
+        track_album_id(&self.pool, item_id).await
+    }
+    pub async fn series_provider_lookup(&self, series_id: i64) -> Result<(String, Option<String>), AppError> {
+        series_provider_lookup(&self.pool, series_id).await
+    }
+    pub async fn episode_item_id(&self, series_id: i64, season_number: i64, episode_number: i64) -> Result<Option<i64>, AppError> {
+        episode_item_id(&self.pool, series_id, season_number, episode_number).await
+    }
+}
 
 fn stream_url(item_id: i64) -> String {
     format!("/api/v1/stream/{}", item_id)
@@ -47,7 +132,7 @@ async fn series_credits(pool: &SqlitePool, series_id: i64) -> Result<Vec<CreditD
 }
 
 /// Cards for a single library, shaped by its type.
-pub async fn list_library(pool: &SqlitePool, library_id: i64, library_type: &LibraryType) -> Result<Vec<Card>, AppError> {
+async fn list_library(pool: &SqlitePool, library_id: i64, library_type: &LibraryType) -> Result<Vec<Card>, AppError> {
     let cards = match library_type {
         LibraryType::TvShows => sqlx::query_as::<_, Card>(
             "SELECT id, 'series' AS kind, name AS title, poster_url, year, NULL AS stream_url
@@ -84,7 +169,7 @@ pub async fn list_library(pool: &SqlitePool, library_id: i64, library_type: &Lib
 }
 
 /// Recently-added cards across all libraries (series collapse to one card).
-pub async fn recently_added(pool: &SqlitePool) -> Result<Vec<Card>, AppError> {
+async fn recently_added(pool: &SqlitePool) -> Result<Vec<Card>, AppError> {
     let cards = sqlx::query_as::<_, Card>(
         "SELECT id, kind, title, poster_url, year, stream_url FROM (
             SELECT mi.id, 'movie' AS kind, mv.title, mv.poster_url, mv.year,
@@ -122,7 +207,7 @@ pub async fn recently_added(pool: &SqlitePool) -> Result<Vec<Card>, AppError> {
 }
 
 /// Title search across movies, series, books and music videos.
-pub async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppError> {
+async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppError> {
     let like = format!("%{}%", query);
     let cards = sqlx::query_as::<_, Card>(
         "SELECT id, kind, title, poster_url, year, stream_url FROM (
@@ -151,7 +236,7 @@ pub async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppErro
     Ok(cards)
 }
 
-pub async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail, AppError> {
+async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail, AppError> {
     let row = sqlx::query_as::<_, crate::models::db::movies::Movie>(
         "SELECT * FROM movies WHERE item_id = ?"
     ).bind(item_id).fetch_optional(pool).await?
@@ -193,7 +278,7 @@ pub async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail
     })
 }
 
-pub async fn music_video_detail(pool: &SqlitePool, item_id: i64) -> Result<MusicVideoDetail, AppError> {
+async fn music_video_detail(pool: &SqlitePool, item_id: i64) -> Result<MusicVideoDetail, AppError> {
     let row = sqlx::query_as::<_, crate::models::db::music_videos::MusicVideo>(
         "SELECT * FROM music_videos WHERE item_id = ?"
     ).bind(item_id).fetch_optional(pool).await?
@@ -213,7 +298,7 @@ pub async fn music_video_detail(pool: &SqlitePool, item_id: i64) -> Result<Music
 }
 
 /// Series cards, optionally restricted to one library.
-pub async fn series_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+async fn series_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
     let cards = match library_id {
         Some(id) => sqlx::query_as::<_, Card>(
             "SELECT id, 'series' AS kind, name AS title, poster_url, year, NULL AS stream_url
@@ -240,7 +325,7 @@ async fn season_list(pool: &SqlitePool, series_id: i64) -> Result<Vec<SeasonDto>
     }).collect())
 }
 
-pub async fn series_detail(pool: &SqlitePool, series_id: i64) -> Result<SeriesDetail, AppError> {
+async fn series_detail(pool: &SqlitePool, series_id: i64) -> Result<SeriesDetail, AppError> {
     let s = sqlx::query_as::<_, crate::models::db::series::Series>(
         "SELECT * FROM series WHERE id = ?"
     ).bind(series_id).fetch_optional(pool).await?
@@ -274,11 +359,11 @@ pub async fn series_detail(pool: &SqlitePool, series_id: i64) -> Result<SeriesDe
     })
 }
 
-pub async fn series_seasons(pool: &SqlitePool, series_id: i64) -> Result<Vec<SeasonDto>, AppError> {
+async fn series_seasons(pool: &SqlitePool, series_id: i64) -> Result<Vec<SeasonDto>, AppError> {
     season_list(pool, series_id).await
 }
 
-pub async fn season_episodes(pool: &SqlitePool, series_id: i64, season_number: i64) -> Result<Vec<EpisodeDto>, AppError> {
+async fn season_episodes(pool: &SqlitePool, series_id: i64, season_number: i64) -> Result<Vec<EpisodeDto>, AppError> {
     let series_name = sqlx::query_scalar::<_, String>("SELECT name FROM series WHERE id = ?")
         .bind(series_id).fetch_optional(pool).await?;
 
@@ -304,7 +389,7 @@ pub async fn season_episodes(pool: &SqlitePool, series_id: i64, season_number: i
     }).collect())
 }
 
-pub async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDto, AppError> {
+async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDto, AppError> {
     let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>)>(
         "SELECT s.id, s.name, se.season_number, e.episode_number, e.title, e.plot, e.still_url, e.runtime, e.air_date
          FROM episodes e
@@ -330,7 +415,7 @@ pub async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDt
     })
 }
 
-pub async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, AppError> {
+async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, AppError> {
     let b = sqlx::query_as::<_, crate::models::db::books::Book>(
         &format!("SELECT {} FROM media_items mi JOIN books b ON b.item_id = mi.id WHERE mi.id = ?",
             crate::models::db::books::BOOK_SELECT)
@@ -353,7 +438,7 @@ pub async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, 
 // ── Music reads ────────────────────────────────────────────────────────────
 
 /// Album cards, optionally restricted to one artist.
-pub async fn artist_albums(pool: &SqlitePool, artist_id: i64) -> Result<Vec<Card>, AppError> {
+async fn artist_albums(pool: &SqlitePool, artist_id: i64) -> Result<Vec<Card>, AppError> {
     Ok(sqlx::query_as::<_, Card>(
         "SELECT id, 'album' AS kind, title, cover_url AS poster_url, year, NULL AS stream_url
          FROM albums WHERE artist_id = ? ORDER BY year, title"
@@ -361,7 +446,7 @@ pub async fn artist_albums(pool: &SqlitePool, artist_id: i64) -> Result<Vec<Card
 }
 
 /// Artist cards, optionally restricted to one library.
-pub async fn artist_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+async fn artist_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
     let cards = match library_id {
         Some(id) => sqlx::query_as::<_, Card>(
             "SELECT id, 'artist' AS kind, name AS title, image_url AS poster_url, NULL AS year, NULL AS stream_url
@@ -376,7 +461,7 @@ pub async fn artist_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<
 }
 
 /// All tracks in a music library, ordered by artist → album → disc/track.
-pub async fn library_tracks(pool: &SqlitePool, library_id: i64) -> Result<Vec<TrackDto>, AppError> {
+async fn library_tracks(pool: &SqlitePool, library_id: i64) -> Result<Vec<TrackDto>, AppError> {
     let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)>(
         "SELECT mi.id, t.track_number, t.disc_number, t.title, ar.name AS artist, al.title AS album, al.cover_url, t.duration
          FROM media_items mi
@@ -393,7 +478,7 @@ pub async fn library_tracks(pool: &SqlitePool, library_id: i64) -> Result<Vec<Tr
     }).collect())
 }
 
-pub async fn artist_detail(pool: &SqlitePool, artist_id: i64) -> Result<ArtistDetail, AppError> {
+async fn artist_detail(pool: &SqlitePool, artist_id: i64) -> Result<ArtistDetail, AppError> {
     let a = sqlx::query_as::<_, crate::models::db::artists::Artist>(
         "SELECT * FROM artists WHERE id = ?"
     ).bind(artist_id).fetch_optional(pool).await?
@@ -408,7 +493,7 @@ pub async fn artist_detail(pool: &SqlitePool, artist_id: i64) -> Result<ArtistDe
     })
 }
 
-pub async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetail, AppError> {
+async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetail, AppError> {
     let al = sqlx::query_as::<_, crate::models::db::albums::Album>(
         "SELECT * FROM albums WHERE id = ?"
     ).bind(album_id).fetch_optional(pool).await?
@@ -449,7 +534,7 @@ pub async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetai
 }
 
 /// Enriched tracks for a playlist, in order.
-pub async fn playlist_tracks(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<TrackDto>, AppError> {
+async fn playlist_tracks(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<TrackDto>, AppError> {
     let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)>(
         "SELECT mi.id, t.track_number, t.disc_number, t.title, ar.name AS artist, al.title AS album, al.cover_url, t.duration
          FROM playlist_tracks pt
@@ -468,9 +553,71 @@ pub async fn playlist_tracks(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<
 }
 
 /// Look up the provider id stored on a movie or series, for metadata refresh.
-pub async fn movie_provider_lookup(pool: &SqlitePool, item_id: i64) -> Result<(Option<String>, Option<String>), AppError> {
+async fn movie_provider_lookup(pool: &SqlitePool, item_id: i64) -> Result<(Option<String>, Option<String>), AppError> {
     let row: Option<(Option<String>, Option<String>)> =
         sqlx::query_as("SELECT title, provider_ids FROM movies WHERE item_id = ?")
             .bind(item_id).fetch_optional(pool).await?;
     Ok(row.unwrap_or((None, None)))
+}
+
+/// The on-disk path backing a media item, if it exists.
+async fn file_path(pool: &SqlitePool, id: i64) -> Result<Option<String>, AppError> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT file_path FROM media_items WHERE id = ?")
+        .bind(id).fetch_optional(pool).await?;
+    Ok(row.map(|r| r.0))
+}
+
+/// Like [`file_path`] but errors with `NotFound` when the item is missing.
+async fn require_file_path(pool: &SqlitePool, id: i64) -> Result<String, AppError> {
+    file_path(pool, id).await?
+        .ok_or_else(|| AppError::NotFound("Media not found".to_string()))
+}
+
+/// Source images for thumbnail generation: `(file_path, poster_url, backdrop_url)`.
+async fn thumbnail_sources(pool: &SqlitePool, id: i64) -> Result<Option<(String, Option<String>, Option<String>)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT mi.file_path,
+                COALESCE(mv.poster_url, e.still_url, mvd.poster_url) AS poster_url,
+                mv.backdrop_url AS backdrop_url
+         FROM media_items mi
+         LEFT JOIN movies mv ON mv.item_id = mi.id
+         LEFT JOIN episodes e ON e.item_id = mi.id
+         LEFT JOIN music_videos mvd ON mvd.item_id = mi.id
+         WHERE mi.id = ?"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// The `item_type` discriminator for a media item, erroring if it doesn't exist.
+async fn item_type(pool: &SqlitePool, id: i64) -> Result<String, AppError> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT item_type FROM media_items WHERE id = ?")
+        .bind(id).fetch_optional(pool).await?;
+    Ok(row.ok_or_else(|| AppError::NotFound(format!("Media {} not found", id)))?.0)
+}
+
+/// The album a track belongs to (if any).
+async fn track_album_id(pool: &SqlitePool, item_id: i64) -> Result<Option<i64>, AppError> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as("SELECT album_id FROM tracks WHERE item_id = ?")
+        .bind(item_id).fetch_optional(pool).await?;
+    Ok(row.and_then(|r| r.0))
+}
+
+/// A series' display name and stored `provider_ids` JSON, erroring if missing.
+async fn series_provider_lookup(pool: &SqlitePool, series_id: i64) -> Result<(String, Option<String>), AppError> {
+    sqlx::query_as("SELECT name, provider_ids FROM series WHERE id = ?")
+        .bind(series_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Series {} not found", series_id)))
+}
+
+/// Resolve the `media_items` id for a specific episode within a series.
+async fn episode_item_id(pool: &SqlitePool, series_id: i64, season_number: i64, episode_number: i64) -> Result<Option<i64>, AppError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT e.item_id FROM episodes e JOIN seasons se ON se.id = e.season_id
+         WHERE se.series_id = ? AND se.season_number = ? AND e.episode_number = ?"
+    )
+    .bind(series_id).bind(season_number).bind(episode_number)
+    .fetch_optional(pool).await?;
+    Ok(row.map(|r| r.0))
 }
