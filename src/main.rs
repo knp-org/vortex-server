@@ -5,6 +5,9 @@ mod models;
 mod infrastructure;
 mod metadata_providers;
 
+#[cfg(test)]
+mod test_support;
+
 // Re-export for backward compatibility
 pub use infrastructure::error;
 

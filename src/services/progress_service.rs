@@ -72,6 +72,21 @@ impl ProgressService {
         Ok(())
     }
 
+    /// Resume position for HLS playback by media id.
+    ///
+    /// NOTE: this reads the legacy `playback_progress` table, which was dropped in
+    /// migration `20260613120200_per_user_state.sql`, so it currently always yields
+    /// `None` (errors are swallowed). Kept behavior-identical during the repository
+    /// refactor; rewiring it to the per-user `user_media_progress` table needs the
+    /// caller's user id plumbed into `get_hls_playlist`.
+    pub async fn resume_position(&self, media_id: i64) -> Option<i64> {
+        sqlx::query_scalar::<_, i64>("SELECT position FROM playback_progress WHERE media_id = ?")
+            .bind(media_id)
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None)
+    }
+
     /// A user's stored `(position, reading_style)` for an item, defaulting to
     /// `(0, None)` when none exists.
     pub async fn get(&self, user_id: i64, item_id: i64) -> Result<(i64, Option<String>), AppError> {
