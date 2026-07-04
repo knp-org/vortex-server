@@ -68,14 +68,9 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
     for library in libraries {
         tracing::info!(library = %library.name, library_type = ?library.library_type, "Scanning library");
 
-        // Image scanning lands in a later slice (EXIF reader).
-        if library.library_type == LibraryType::Images {
-            tracing::warn!(library = %library.name, "Skipping: Images scanning not implemented yet");
-            continue;
-        }
-
         let is_books = library.library_type == LibraryType::Books;
         let is_music = library.library_type == LibraryType::Music;
+        let is_images = library.library_type == LibraryType::Images;
 
         // Each entry is (file path, owning root path) so TV parsing can strip the
         // correct root when a library spans multiple folders.
@@ -92,6 +87,8 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
                                     crate::services::books::BOOK_EXTENSIONS.contains(&ext_str.as_str())
                                 } else if is_music {
                                     AUDIO_EXTENSIONS.contains(&ext_str.as_str())
+                                } else if is_images {
+                                    crate::services::images::IMAGE_EXTENSIONS.contains(&ext_str.as_str())
                                 } else {
                                     VIDEO_EXTENSIONS.contains(&ext_str.as_str())
                                 };
@@ -118,6 +115,8 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
                     process_book(pool_ref, &path, lib_ref, force_refresh).await;
                 } else if is_music {
                     process_music(pool_ref, &path, lib_ref, force_refresh).await;
+                } else if is_images {
+                    process_image(pool_ref, &path, &root, lib_ref, force_refresh).await;
                 } else {
                     process_video(pool_ref, &path, &root, lib_ref, force_refresh, cache_ref.clone()).await;
                 }
@@ -190,6 +189,16 @@ async fn cleanup_missing_files(pool: &SqlitePool, library_id: Option<i64>) {
     for aid in &orphaned_artists {
         tracing::info!(artist_id = %aid, "Removing orphaned artist");
         let _ = sqlx::query("DELETE FROM artists WHERE id = ?").bind(aid).execute(pool).await;
+    }
+
+    let orphaned_galleries = sqlx::query_scalar::<_, i64>(
+        "SELECT g.id FROM galleries g
+         LEFT JOIN images i ON i.gallery_id = g.id
+         WHERE i.item_id IS NULL"
+    ).fetch_all(pool).await.unwrap_or_default();
+    for gid in &orphaned_galleries {
+        tracing::info!(gallery_id = %gid, "Removing orphaned gallery");
+        let _ = sqlx::query("DELETE FROM galleries WHERE id = ?").bind(gid).execute(pool).await;
     }
 }
 
@@ -275,6 +284,54 @@ async fn process_book(pool: &SqlitePool, path: &Path, library: &Library, force_r
     if let Err(e) = CatalogService::new(pool.clone()).upsert_book(item_id, &file_stem, page_count).await {
         tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book");
     }
+}
+
+/// Ingest a single photo into `media_items` + `images`, grouping it into a gallery
+/// derived from its containing folder (or the library name when it sits at the root).
+async fn process_image(pool: &SqlitePool, path: &Path, root_path: &str, library: &Library, force_refresh: bool) {
+    let path_str = path.to_string_lossy().to_string();
+    let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
+
+    // Fast scan: only ingest new files. Skip photos already in the library so
+    // manual title/gallery edits are preserved. A full refresh re-reads EXIF.
+    if !force_refresh && item_exists(pool, &path_str).await {
+        return;
+    }
+
+    // Gallery = the immediate parent folder name. When the photo sits directly in
+    // a scan root, use that root folder's own name (e.g. ".../Wallpapers" -> the
+    // "Wallpapers" album), falling back to the library name only if the root has
+    // no nameable component.
+    let gallery_name = path.parent()
+        .filter(|p| p.to_string_lossy() != root_path)
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .or_else(|| Path::new(root_path).file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| library.name.clone());
+
+    let p = path_str.clone();
+    let exif = tokio::task::spawn_blocking(move || crate::services::images::read_exif(&p))
+        .await
+        .unwrap_or_default();
+
+    let catalog = CatalogService::new(pool.clone());
+
+    let gallery_id = match catalog.get_or_create_gallery(library.id, &gallery_name).await {
+        Ok(id) => id,
+        Err(e) => { tracing::warn!(gallery = %gallery_name, error = %e, "Failed to get/create gallery"); return; }
+    };
+    let item_id = match catalog.upsert_item(library.id, "image", &path_str).await {
+        Ok(id) => id,
+        Err(e) => { tracing::warn!(file = %file_stem, error = %e, "Failed to upsert image item"); return; }
+    };
+    if let Err(e) = catalog.upsert_image(item_id, Some(gallery_id), &file_stem, &exif).await {
+        tracing::warn!(file = %file_stem, error = %e, "Failed to upsert image");
+        return;
+    }
+
+    // First photo in the gallery becomes its cover; track the earliest capture date.
+    let _ = catalog.set_gallery_cover_if_empty(gallery_id, &format!("/api/v1/media/{}/thumbnail", item_id)).await;
+    let _ = catalog.min_gallery_taken_at(gallery_id, exif.taken_at.as_deref()).await;
 }
 
 /// Extracted audio tags (read off-thread via lofty).

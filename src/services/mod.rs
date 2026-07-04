@@ -1,5 +1,6 @@
 pub mod books;
 pub mod book_service;
+pub mod gallery_service;
 pub mod catalog_service;
 pub mod media_service;
 pub mod metadata_service;

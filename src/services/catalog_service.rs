@@ -276,6 +276,68 @@ impl CatalogService {
         Ok(())
     }
 
+    // ── Images: galleries → images ─────────────────────────────────────────────
+
+    /// Get-or-create a gallery (photo album) by (library, name) and return its id.
+    pub async fn get_or_create_gallery(&self, library_id: i64, name: &str) -> Result<i64, AppError> {
+        let pool = &self.pool;
+        sqlx::query("INSERT OR IGNORE INTO galleries (library_id, name) VALUES (?, ?)")
+            .bind(library_id).bind(name).execute(pool).await?;
+        let (id,) = sqlx::query_as::<_, (i64,)>("SELECT id FROM galleries WHERE library_id = ? AND name = ?")
+            .bind(library_id).bind(name).fetch_one(pool).await?;
+        Ok(id)
+    }
+
+    /// Set a gallery's cover URL only if it doesn't already have one.
+    pub async fn set_gallery_cover_if_empty(&self, gallery_id: i64, cover_url: &str) -> Result<(), AppError> {
+        sqlx::query("UPDATE galleries SET cover_url = ? WHERE id = ? AND (cover_url IS NULL OR cover_url = '')")
+            .bind(cover_url).bind(gallery_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Advance a gallery's `taken_at` back to the earliest photo date seen, so the
+    /// gallery sorts by its oldest photo. No-op when `taken_at` is `None`.
+    pub async fn min_gallery_taken_at(&self, gallery_id: i64, taken_at: Option<&str>) -> Result<(), AppError> {
+        if let Some(t) = taken_at {
+            sqlx::query("UPDATE galleries SET taken_at = ? WHERE id = ? AND (taken_at IS NULL OR taken_at > ?)")
+                .bind(t).bind(gallery_id).bind(t).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Upsert an `images` detail row from extracted EXIF. The spine row is created
+    /// by [`upsert_item`] first. Preserves a user-edited `title`/`gallery_id`:
+    /// on conflict it refreshes the machine-derived EXIF columns but leaves
+    /// `title` and `gallery_id` alone (COALESCE keeps the existing value).
+    pub async fn upsert_image(
+        &self,
+        item_id: i64,
+        gallery_id: Option<i64>,
+        title: &str,
+        exif: &crate::services::images::ImageExif,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO images
+                (item_id, gallery_id, title, taken_at, width, height, camera_make,
+                 camera_model, lens, iso, focal_length, aperture, gps_lat, gps_lon, orientation)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(item_id) DO UPDATE SET
+                gallery_id=COALESCE(images.gallery_id, excluded.gallery_id),
+                taken_at=excluded.taken_at, width=excluded.width, height=excluded.height,
+                camera_make=excluded.camera_make, camera_model=excluded.camera_model,
+                lens=excluded.lens, iso=excluded.iso, focal_length=excluded.focal_length,
+                aperture=excluded.aperture, gps_lat=excluded.gps_lat, gps_lon=excluded.gps_lon,
+                orientation=excluded.orientation"
+        )
+        .bind(item_id).bind(gallery_id).bind(title)
+        .bind(&exif.taken_at).bind(exif.width).bind(exif.height)
+        .bind(&exif.camera_make).bind(&exif.camera_model).bind(&exif.lens)
+        .bind(exif.iso).bind(exif.focal_length).bind(exif.aperture)
+        .bind(exif.gps_lat).bind(exif.gps_lon).bind(exif.orientation)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Delete a spine row (cascades to its detail row, credits, genres and user state).
     pub async fn delete_item(&self, item_id: i64) -> Result<(), AppError> {
         sqlx::query("DELETE FROM media_items WHERE id = ?").bind(item_id).execute(&self.pool).await?;

@@ -6,7 +6,7 @@
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::db::libraries::LibraryType;
-use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, MusicVideoDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail};
+use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, MusicVideoDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail, GalleryDetail, ImageDto, ImageDetail};
 
 /// Read layer over the per-type catalog tables. The free functions below are the
 /// internal query layer; this struct is the public entry point.
@@ -64,6 +64,21 @@ impl MediaService {
     pub async fn album_detail(&self, album_id: i64) -> Result<AlbumDetail, AppError> {
         album_detail(&self.pool, album_id).await
     }
+    pub async fn gallery_cards(&self, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+        gallery_cards(&self.pool, library_id).await
+    }
+    pub async fn gallery_detail(&self, gallery_id: i64) -> Result<GalleryDetail, AppError> {
+        gallery_detail(&self.pool, gallery_id).await
+    }
+    pub async fn library_images(&self, library_id: i64) -> Result<Vec<ImageDto>, AppError> {
+        library_images(&self.pool, library_id).await
+    }
+    pub async fn trashed_images(&self, library_id: i64) -> Result<Vec<ImageDto>, AppError> {
+        trashed_images(&self.pool, library_id).await
+    }
+    pub async fn image_detail(&self, item_id: i64) -> Result<ImageDetail, AppError> {
+        image_detail(&self.pool, item_id).await
+    }
     pub async fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<TrackDto>, AppError> {
         playlist_tracks(&self.pool, playlist_id).await
     }
@@ -95,6 +110,16 @@ impl MediaService {
 
 fn stream_url(item_id: i64) -> String {
     format!("/api/v1/stream/{}", item_id)
+}
+
+/// Full-resolution original photo URL for an image item.
+fn image_url(item_id: i64) -> String {
+    format!("/api/v1/images/item/{}", item_id)
+}
+
+/// Server-scaled thumbnail URL (shared thumbnail endpoint, works for photos).
+fn image_thumb_url(item_id: i64) -> String {
+    format!("/api/v1/media/{}/thumbnail", item_id)
 }
 
 async fn item_genres(pool: &SqlitePool, item_id: i64) -> Result<Vec<String>, AppError> {
@@ -157,7 +182,11 @@ async fn list_library(pool: &SqlitePool, library_id: i64, library_type: &Library
              WHERE mi.library_id = ? ORDER BY mv.title"
         ).bind(library_id).fetch_all(pool).await?,
 
-        // Movies, Other, (Music/Images not scanned yet) -> movie cards.
+        // Reuse gallery_cards so gallery cards carry their mosaic `thumbs`
+        // (identical query + ordering, plus up to 4 thumbnails per gallery).
+        LibraryType::Images => gallery_cards(pool, Some(library_id)).await?,
+
+        // Movies, Other -> movie cards.
         _ => sqlx::query_as::<_, Card>(
             "SELECT mi.id, 'movie' AS kind, mv.title, mv.poster_url, mv.year,
                     ('/api/v1/stream/' || mi.id) AS stream_url
@@ -199,6 +228,13 @@ async fn recently_added(pool: &SqlitePool) -> Result<Vec<Card>, AppError> {
                       JOIN tracks t ON t.item_id = mi.id
                     WHERE t.album_id = al.id) AS added_at
             FROM albums al
+            UNION ALL
+            SELECT g.id, 'gallery' AS kind, g.name AS title, g.cover_url, NULL AS year,
+                   NULL AS stream_url,
+                   (SELECT MAX(mi.added_at) FROM media_items mi
+                      JOIN images i ON i.item_id = mi.id
+                    WHERE i.gallery_id = g.id) AS added_at
+            FROM galleries g
         )
         WHERE added_at IS NOT NULL
         ORDER BY added_at DESC LIMIT 20"
@@ -230,9 +266,12 @@ async fn search(pool: &SqlitePool, query: &str) -> Result<Vec<Card>, AppError> {
             UNION ALL
             SELECT id, 'artist' AS kind, name AS title, image_url AS poster_url, NULL AS year, NULL AS stream_url
             FROM artists WHERE name LIKE ?
+            UNION ALL
+            SELECT id, 'gallery' AS kind, name AS title, cover_url AS poster_url, NULL AS year, NULL AS stream_url
+            FROM galleries WHERE name LIKE ?
         )
         ORDER BY title LIMIT 20"
-    ).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).fetch_all(pool).await?;
+    ).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).bind(&like).fetch_all(pool).await?;
     Ok(cards)
 }
 
@@ -530,6 +569,160 @@ async fn album_detail(pool: &SqlitePool, album_id: i64) -> Result<AlbumDetail, A
             duration: t.duration,
             stream_url: stream_url(t.item_id),
         }).collect(),
+    })
+}
+
+// ── Images: galleries → images ───────────────────────────────────────────────
+
+/// Gallery cards, optionally restricted to one library.
+async fn gallery_cards(pool: &SqlitePool, library_id: Option<i64>) -> Result<Vec<Card>, AppError> {
+    let mut cards = match library_id {
+        Some(id) => sqlx::query_as::<_, Card>(
+            "SELECT id, 'gallery' AS kind, name AS title, cover_url AS poster_url,
+                    NULL AS year, NULL AS stream_url
+             FROM galleries WHERE library_id = ? ORDER BY COALESCE(taken_at, '') DESC, name"
+        ).bind(id).fetch_all(pool).await?,
+        None => sqlx::query_as::<_, Card>(
+            "SELECT id, 'gallery' AS kind, name AS title, cover_url AS poster_url,
+                    NULL AS year, NULL AS stream_url
+             FROM galleries ORDER BY COALESCE(taken_at, '') DESC, name"
+        ).fetch_all(pool).await?,
+    };
+
+    // Attach up to 4 thumbnails per gallery so the client can render a mosaic
+    // collage card. One windowed query covers every gallery in the result set.
+    if !cards.is_empty() {
+        let ids: Vec<i64> = cards.iter().map(|c| c.id).collect();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT gallery_id, item_id FROM (
+                 SELECT i.gallery_id AS gallery_id, mi.id AS item_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY i.gallery_id
+                            ORDER BY COALESCE(i.taken_at, ''), mi.file_path
+                        ) AS rn
+                 FROM media_items mi JOIN images i ON i.item_id = mi.id
+                 WHERE i.gallery_id IN ({})
+             ) WHERE rn <= 4
+             ORDER BY gallery_id, rn",
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, (i64, i64)>(&sql);
+        for id in &ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(pool).await?;
+
+        use std::collections::HashMap;
+        let mut by_gallery: HashMap<i64, Vec<String>> = HashMap::new();
+        for (gallery_id, item_id) in rows {
+            by_gallery.entry(gallery_id).or_default().push(image_thumb_url(item_id));
+        }
+        for card in &mut cards {
+            if let Some(thumbs) = by_gallery.remove(&card.id) {
+                card.thumbs = thumbs;
+            }
+        }
+    }
+
+    Ok(cards)
+}
+
+/// Every photo in an Images library, across all its albums (and unsorted ones).
+/// Used by the album "Add Photos" picker to choose existing photos to move in.
+async fn library_images(pool: &SqlitePool, library_id: i64) -> Result<Vec<ImageDto>, AppError> {
+    let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+        "SELECT mi.id, i.gallery_id, i.title, i.taken_at, i.width, i.height
+         FROM media_items mi JOIN images i ON i.item_id = mi.id
+         WHERE mi.library_id = ? AND mi.item_type = 'image' AND i.deleted_at IS NULL
+         ORDER BY COALESCE(i.taken_at, ''), mi.file_path"
+    ).bind(library_id).fetch_all(pool).await?;
+
+    Ok(rows.into_iter().map(|(id, gallery_id, title, taken_at, width, height)| ImageDto {
+        id, gallery_id, title, taken_at, width, height,
+        url: image_url(id),
+        thumb_url: image_thumb_url(id),
+    }).collect())
+}
+
+/// Photos in an Images library's recycle bin (removed from their album but not
+/// yet permanently deleted), most-recently-trashed first.
+async fn trashed_images(pool: &SqlitePool, library_id: i64) -> Result<Vec<ImageDto>, AppError> {
+    let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+        "SELECT mi.id, i.prev_gallery_id, i.title, i.taken_at, i.width, i.height
+         FROM media_items mi JOIN images i ON i.item_id = mi.id
+         WHERE mi.library_id = ? AND mi.item_type = 'image' AND i.deleted_at IS NOT NULL
+         ORDER BY i.deleted_at DESC, mi.file_path"
+    ).bind(library_id).fetch_all(pool).await?;
+
+    // gallery_id carries the album the photo would be restored to (its former home).
+    Ok(rows.into_iter().map(|(id, gallery_id, title, taken_at, width, height)| ImageDto {
+        id, gallery_id, title, taken_at, width, height,
+        url: image_url(id),
+        thumb_url: image_thumb_url(id),
+    }).collect())
+}
+
+async fn gallery_detail(pool: &SqlitePool, gallery_id: i64) -> Result<GalleryDetail, AppError> {
+    let g = sqlx::query_as::<_, crate::models::db::galleries::Gallery>(
+        "SELECT * FROM galleries WHERE id = ?"
+    ).bind(gallery_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Gallery {} not found", gallery_id)))?;
+
+    let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+        "SELECT mi.id, i.gallery_id, i.title, i.taken_at, i.width, i.height
+         FROM media_items mi JOIN images i ON i.item_id = mi.id
+         WHERE i.gallery_id = ?
+         ORDER BY COALESCE(i.taken_at, ''), mi.file_path"
+    ).bind(gallery_id).fetch_all(pool).await?;
+
+    let images: Vec<ImageDto> = rows.into_iter().map(|(id, gallery_id, title, taken_at, width, height)| ImageDto {
+        id, gallery_id, title, taken_at, width, height,
+        url: image_url(id),
+        thumb_url: image_thumb_url(id),
+    }).collect();
+
+    Ok(GalleryDetail {
+        id: g.id,
+        library_id: g.library_id,
+        name: g.name,
+        description: g.description,
+        cover_url: g.cover_url,
+        taken_at: g.taken_at,
+        image_count: images.len() as i64,
+        images,
+    })
+}
+
+async fn image_detail(pool: &SqlitePool, item_id: i64) -> Result<ImageDetail, AppError> {
+    let img = sqlx::query_as::<_, crate::models::db::images::Image>(
+        &format!("SELECT {} FROM media_items mi JOIN images i ON i.item_id = mi.id WHERE mi.id = ?",
+            crate::models::db::images::IMAGE_SELECT)
+    ).bind(item_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Image {} not found", item_id)))?;
+
+    let file_name = std::path::Path::new(&img.file_path)
+        .file_name().map(|n| n.to_string_lossy().to_string());
+
+    Ok(ImageDetail {
+        id: img.item_id,
+        gallery_id: img.gallery_id,
+        title: img.title,
+        taken_at: img.taken_at,
+        width: img.width,
+        height: img.height,
+        camera_make: img.camera_make,
+        camera_model: img.camera_model,
+        lens: img.lens,
+        iso: img.iso,
+        focal_length: img.focal_length,
+        aperture: img.aperture,
+        gps_lat: img.gps_lat,
+        gps_lon: img.gps_lon,
+        orientation: img.orientation,
+        url: image_url(item_id),
+        thumb_url: image_thumb_url(item_id),
+        file_name,
     })
 }
 

@@ -51,6 +51,8 @@ uuid = { version = "1.20.0", features = ["v4"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 lofty = "0.24.0"
 dirs = "5"
+kamadak-exif = "0.5"
+imagesize = "0.13"
 
 [target.'cfg(not(windows))'.dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }

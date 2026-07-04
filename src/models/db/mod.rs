@@ -7,6 +7,8 @@ pub mod artists;
 pub mod albums;
 pub mod tracks;
 pub mod music_videos;
+pub mod galleries;
+pub mod images;
 pub mod libraries;
 pub mod settings;
 pub mod provider_configs;

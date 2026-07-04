@@ -2,10 +2,11 @@
 //! 
 //! Provides centralized configuration with environment variable support.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use rand::Rng;
 
 /// Application configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppConfig {
     /// Server port (default: 3000)
     pub server_port: u16,
@@ -30,6 +31,24 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
 }
 
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("server_port", &self.server_port)
+            .field("transcode_dir", &self.transcode_dir)
+            .field("hls_segment_time", &self.hls_segment_time)
+            .field("segment_wait_timeout", &self.segment_wait_timeout)
+            .field("clear_cache_on_startup", &self.clear_cache_on_startup)
+            // Never log the signing secret.
+            .field("jwt_secret", &"<redacted>")
+            .field("transcoding_hwa", &self.transcoding_hwa)
+            .field("hevc_transcode_threshold_mins", &self.hevc_transcode_threshold_mins)
+            .field("max_cache_size_mb", &self.max_cache_size_mb)
+            .field("data_dir", &self.data_dir)
+            .finish()
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -38,7 +57,9 @@ impl Default for AppConfig {
             hls_segment_time: 2,
             segment_wait_timeout: 15,
             clear_cache_on_startup: true,
-            jwt_secret: "vortex_quantum_secret_key_default".to_string(),
+            // Empty sentinel: `from_env` always replaces this with an env-supplied
+            // or persisted random secret. Never used to sign real tokens.
+            jwt_secret: String::new(),
             transcoding_hwa: None,
             hevc_transcode_threshold_mins: 15.0,
             max_cache_size_mb: 5000,
@@ -84,10 +105,6 @@ impl AppConfig {
             config.clear_cache_on_startup = clear.to_lowercase() != "false";
         }
 
-        if let Ok(secret) = std::env::var("VORTEX_JWT_SECRET") {
-            config.jwt_secret = secret;
-        }
-
         if let Ok(hwa) = std::env::var("VORTEX_TRANSCODING_HWA") {
             config.transcoding_hwa = Some(hwa.to_lowercase());
         }
@@ -102,8 +119,60 @@ impl AppConfig {
             config.data_dir = PathBuf::from(dir);
         }
 
+        // Resolve last, once `data_dir` is final, so a generated secret is persisted
+        // in the right place.
+        config.jwt_secret = resolve_jwt_secret(&config.data_dir);
+
         config
     }
+}
+
+/// Resolve the JWT signing secret without ever falling back to a hardcoded value.
+///
+/// Order of preference:
+/// 1. `VORTEX_JWT_SECRET` env var (if non-empty).
+/// 2. A previously persisted secret at `<data_dir>/jwt_secret.key`.
+/// 3. A freshly generated random secret, persisted for future runs so existing
+///    sessions survive a restart.
+fn resolve_jwt_secret(data_dir: &Path) -> String {
+    if let Ok(secret) = std::env::var("VORTEX_JWT_SECRET") {
+        if !secret.trim().is_empty() {
+            return secret;
+        }
+    }
+
+    let secret_file = data_dir.join("jwt_secret.key");
+    if let Ok(existing) = std::fs::read_to_string(&secret_file) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    // Generate a 48-char alphanumeric secret (~285 bits of entropy).
+    let secret: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect();
+
+    if let Err(e) = std::fs::create_dir_all(data_dir) {
+        tracing::warn!(error = %e, "Failed to create data dir for JWT secret; using an ephemeral in-memory secret (sessions will not survive restart)");
+        return secret;
+    }
+    match std::fs::write(&secret_file, &secret) {
+        Ok(_) => {
+            // Restrict to owner-only on Unix so the secret isn't world-readable.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&secret_file, std::fs::Permissions::from_mode(0o600));
+            }
+            tracing::warn!(path = %secret_file.display(), "VORTEX_JWT_SECRET not set; generated and persisted a random JWT secret");
+        }
+        Err(e) => tracing::warn!(error = %e, "Failed to persist generated JWT secret; using an ephemeral in-memory secret (sessions will not survive restart)"),
+    }
+    secret
 }
 
 /// Global configuration instance

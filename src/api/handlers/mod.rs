@@ -1,5 +1,6 @@
 pub mod books;
 pub mod common;
+pub mod galleries;
 pub mod favorites;
 pub mod library;
 pub mod media;

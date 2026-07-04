@@ -1,8 +1,10 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    Extension,
     Json,
 };
+use crate::api::middleware::AuthUser;
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::db::libraries::{Library, LibraryType};
@@ -94,9 +96,14 @@ pub async fn refresh_library(
     StatusCode::ACCEPTED
 }
 
+/// Browse server-side directories for library-path configuration. Admin-only:
+/// it can enumerate any directory the server process can read, so it must not be
+/// exposed to ordinary users.
 pub async fn list_directories(
+    Extension(auth_user): Extension<AuthUser>,
     Json(payload): Json<ListDirectoriesRequest>,
-) -> Json<Vec<DirectoryEntry>> {
+) -> Result<Json<Vec<DirectoryEntry>>, AppError> {
+    auth_user.require_admin()?;
     let default_path = if cfg!(target_os = "windows") { "." } else { "/" };
     let path_str = payload.path.unwrap_or_else(|| default_path.to_string());
     let path = StdPath::new(&path_str);
@@ -112,7 +119,7 @@ pub async fn list_directories(
                 });
             }
         }
-        return Json(drives);
+        return Ok(Json(drives));
     }
 
     let mut entries = Vec::new();
@@ -132,7 +139,7 @@ pub async fn list_directories(
     }
     
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(entries)
+    Ok(Json(entries))
 }
 
 #[derive(serde::Deserialize)]

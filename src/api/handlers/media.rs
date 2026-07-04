@@ -55,6 +55,7 @@ pub async fn get_media_details(
         "book" => json!(media_service::MediaService::new(pool.clone()).book_detail(id).await?),
         "music_video" => json!(media_service::MediaService::new(pool.clone()).music_video_detail(id).await?),
         "episode" => json!(media_service::MediaService::new(pool.clone()).episode_detail(id).await?),
+        "image" => json!(media_service::MediaService::new(pool.clone()).image_detail(id).await?),
         "track" => {
             // A track's "detail" is its album (so the client can show the track list).
             match media_service::MediaService::new(pool.clone()).track_album_id(id).await? {

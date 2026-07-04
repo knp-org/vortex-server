@@ -1,16 +1,19 @@
-use axum::http::StatusCode;
+use axum::{http::StatusCode, Extension};
 use std::{process, time::Duration};
+use crate::api::middleware::AuthUser;
 
-pub async fn shutdown() -> StatusCode {
+pub async fn shutdown(Extension(auth_user): Extension<AuthUser>) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     tracing::info!("Received shutdown request. Terminating in 500ms...");
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(500)).await;
         process::exit(0);
     });
-    StatusCode::OK
+    Ok(StatusCode::OK)
 }
 
-pub async fn restart() -> StatusCode {
+pub async fn restart(Extension(auth_user): Extension<AuthUser>) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     tracing::info!("Received restart request. Restarting in 500ms...");
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -30,14 +33,18 @@ pub async fn restart() -> StatusCode {
         }
         process::exit(1);
     });
-    StatusCode::OK
+    Ok(StatusCode::OK)
 }
 
 use axum::extract::State;
 use sqlx::SqlitePool;
 use crate::error::AppError;
 
-pub async fn clear_database(State(pool): State<SqlitePool>) -> Result<StatusCode, AppError> {
+pub async fn clear_database(
+    State(pool): State<SqlitePool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     tracing::warn!("Clearing database content...");
     
     // Cleanup filesystem caches first

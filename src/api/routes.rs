@@ -11,7 +11,8 @@ use crate::api::handlers::{
     media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library, get_track_lyrics},
     playback::{stream_video, update_progress, get_continue_watching, get_media_progress, get_subtitles, stream_subtitle, stream_embedded_subtitle, get_audio_tracks, get_thumbnail},
     transcode::{get_stream_info, get_hls_playlist, get_hls_segment},
-    images::get_image,
+    images::{get_image, get_image_file, update_image},
+    galleries::{list_galleries, get_gallery, create_gallery, update_gallery, delete_gallery, add_images, remove_image, list_library_images, list_trash, restore_image, purge_image, empty_trash},
     settings::{get_settings, update_setting},
     series::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series},
     providers::{list_providers, get_provider_config, update_provider_config, toggle_provider, reorder_providers, test_provider},
@@ -74,6 +75,17 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/media/:id/identify", axum::routing::post(identify_media))
         .route("/api/v1/metadata/search", get(search_handler))
         .route("/api/v1/library/search", get(search_library))
+        // Images (photo galleries)
+        .route("/api/v1/libraries/:id/images", get(list_library_images))
+        // Recycle bin: list / empty trashed photos for an Images library.
+        .route("/api/v1/libraries/:id/trash", get(list_trash).delete(empty_trash))
+        .route("/api/v1/galleries", get(list_galleries).post(create_gallery))
+        .route("/api/v1/galleries/:id", get(get_gallery).put(update_gallery).delete(delete_gallery))
+        .route("/api/v1/galleries/:id/images", axum::routing::post(add_images))
+        .route("/api/v1/galleries/:id/images/:item_id", axum::routing::delete(remove_image))
+        .route("/api/v1/images/item/:id", get(get_image_file).put(update_image))
+        .route("/api/v1/images/item/:id/restore", axum::routing::post(restore_image))
+        .route("/api/v1/images/item/:id/trash", axum::routing::delete(purge_image))
         // Music browse
         .route("/api/v1/artists", get(crate::api::handlers::media::get_artists))
         .route("/api/v1/artists/:id", get(crate::api::handlers::media::get_artist_detail))

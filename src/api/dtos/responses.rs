@@ -16,6 +16,11 @@ pub struct Card {
     pub year: Option<i64>,
     #[sqlx(default)]
     pub stream_url: Option<String>,
+    /// Up to a few thumbnail URLs used to render a mosaic/collage card
+    /// (currently only populated for gallery cards). Empty for other kinds.
+    #[sqlx(skip)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thumbs: Vec<String>,
 }
 
 /// A person credited on an item or series.
@@ -156,6 +161,56 @@ pub struct ArtistDetail {
     pub bio: Option<String>,
     pub image_url: Option<String>,
     pub albums: Vec<Card>,
+}
+
+/// A photo in grid/lightbox views. `url` is the full-resolution original;
+/// `thumb_url` is the server-scaled thumbnail.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageDto {
+    pub id: i64, // media_items.id
+    pub gallery_id: Option<i64>,
+    pub title: Option<String>,
+    pub taken_at: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub url: String,
+    pub thumb_url: String,
+}
+
+/// Full metadata for a single photo (EXIF + camera/GPS), plus its serving URLs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageDetail {
+    pub id: i64,
+    pub gallery_id: Option<i64>,
+    pub title: Option<String>,
+    pub taken_at: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub lens: Option<String>,
+    pub iso: Option<i64>,
+    pub focal_length: Option<f64>,
+    pub aperture: Option<f64>,
+    pub gps_lat: Option<f64>,
+    pub gps_lon: Option<f64>,
+    pub orientation: Option<i64>,
+    pub url: String,
+    pub thumb_url: String,
+    pub file_name: Option<String>,
+}
+
+/// A photo album (gallery) with its photos, for the gallery detail view.
+#[derive(Debug, Clone, Serialize)]
+pub struct GalleryDetail {
+    pub id: i64,
+    pub library_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub cover_url: Option<String>,
+    pub taken_at: Option<String>,
+    pub image_count: i64,
+    pub images: Vec<ImageDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]

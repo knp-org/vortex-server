@@ -403,6 +403,20 @@ pub async fn stream_embedded_subtitle(
     Ok((headers, output.stdout))
 }
 
+/// Resolve the FFmpeg binary: bundled locations first, then the system PATH.
+fn find_ffmpeg() -> &'static str {
+    const FFMPEG_PATHS: [&str; 4] = [
+        "C:\\ffmpeg\\bin\\ffmpeg.exe",  // Common Windows install
+        "./ffmpeg/ffmpeg.exe",           // Bundled with server (Windows)
+        "./ffmpeg/ffmpeg",               // Bundled with server (Linux/Mac)
+        "ffmpeg",                        // System PATH
+    ];
+    FFMPEG_PATHS.iter()
+        .find(|p| std::path::Path::new(p).exists() || **p == "ffmpeg")
+        .copied()
+        .unwrap_or("ffmpeg")
+}
+
 pub async fn get_thumbnail(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
@@ -427,9 +441,43 @@ pub async fn get_thumbnail(
     if !thumb_dir.exists() {
         let _ = std::fs::create_dir(&thumb_dir);
     }
-    
+
     let thumb_filename = format!("{}.jpg", id);
     let thumb_path = thumb_dir.join(&thumb_filename);
+
+    // Photos: scale the original image into a cached thumbnail. A static image
+    // has no timeline, so the video path's `-ss 5s` seek below would fail — we
+    // generate here with FFmpeg (no seek) and return directly.
+    let image_path: Option<String> = sqlx::query_scalar(
+        "SELECT file_path FROM media_items WHERE id = ? AND item_type = 'image'"
+    ).bind(id).fetch_optional(&pool).await?;
+    if let Some(src) = image_path {
+        if !thumb_path.exists() {
+            let ffmpeg_cmd = find_ffmpeg();
+            tracing::info!("Generating photo thumbnail for {} using FFmpeg", id);
+            let output = tokio::process::Command::new(ffmpeg_cmd)
+                .arg("-i").arg(&src)
+                .arg("-vf").arg("scale=320:-1")
+                .arg(&thumb_path)
+                .arg("-y")
+                .output()
+                .await;
+            if let Ok(o) = &output {
+                if !o.status.success() {
+                    tracing::warn!("FFmpeg failed for photo {}: {}", id, String::from_utf8_lossy(&o.stderr));
+                }
+            } else if let Err(e) = &output {
+                tracing::error!("Failed to execute FFmpeg for photo {}: {}", id, e);
+            }
+        }
+
+        let thumb_bytes = tokio::fs::read(&thumb_path).await
+            .map_err(|_| AppError::Internal("Failed to read (or generate) photo thumbnail".to_string()))?;
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
+        headers.insert(header::CACHE_CONTROL, "public, max-age=31536000".parse().unwrap());
+        return Ok((headers, thumb_bytes));
+    }
 
     if !thumb_path.exists() {
         // 2. Get media file path and metadata
@@ -440,12 +488,18 @@ pub async fn get_thumbnail(
         // 3. Try validation/download from metadata
         let mut generated = false;
 
+        // Bounded client so a slow/hung metadata host can't stall the request.
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+
         // Try poster first, then backdrop
         for url_opt in [poster_url, backdrop_url] {
             if let Some(url) = url_opt {
                 if !url.is_empty() {
                     // Start download
-                    match reqwest::get(&url).await {
+                    match http.get(&url).send().await {
                         Ok(resp) => {
                             if resp.status().is_success() {
                                 match resp.bytes().await {
@@ -469,18 +523,8 @@ pub async fn get_thumbnail(
 
         // 4. Fallback to FFmpeg if needed
         if !generated {
-             // Find FFmpeg - check common locations first
-            let ffmpeg_paths = [
-                "C:\\ffmpeg\\bin\\ffmpeg.exe",  // Common Windows install
-                "./ffmpeg/ffmpeg.exe",           // Bundled with server (Windows)
-                "./ffmpeg/ffmpeg",               // Bundled with server (Linux/Mac)
-                "ffmpeg",                        // System PATH
-            ];
-            
-            let ffmpeg_cmd = ffmpeg_paths.iter()
-                .find(|p| std::path::Path::new(p).exists() || *p == &"ffmpeg")
-                .unwrap_or(&"ffmpeg");
-            
+            let ffmpeg_cmd = find_ffmpeg();
+
             tracing::info!("Generating thumbnail for {} using FFmpeg", id);
             
             // Run FFmpeg asynchronously: extract frame at 5 seconds

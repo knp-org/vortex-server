@@ -71,6 +71,11 @@ fn set_auth_cookie(cookies: &Cookies, token: &str) {
     cookie.set_path("/");
     cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
     cookie.set_max_age(tower_cookies::cookie::time::Duration::days(1));
+    // Only send the auth cookie over HTTPS in production. Left off in dev so
+    // plain-HTTP local testing still authenticates.
+    if std::env::var("VORTEX_ENV").unwrap_or_default() == "production" {
+        cookie.set_secure(true);
+    }
     cookies.add(cookie);
 }
 
