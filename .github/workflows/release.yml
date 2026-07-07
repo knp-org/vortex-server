@@ -70,9 +70,16 @@ jobs:
           cache: 'npm'
           cache-dependency-path: vortex-client/package-lock.json
 
+      - name: Pack Liquid Glass UI
+        run: |
+          cd liquid-glass-ui
+          npm install
+          npm pack
+
       - name: Build Web Client
         run: |
           cd vortex-client
+          npm install ../liquid-glass-ui/knp-org-liquid-glass-ui-*.tgz
           npm install
           npm run build
           cd ..
