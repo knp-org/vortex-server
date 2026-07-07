@@ -57,6 +57,12 @@ jobs:
           repository: knp-org/vortex-client
           path: vortex-client
 
+      - name: Checkout Liquid Glass UI
+        uses: actions/checkout@v4
+        with:
+          repository: knp-org/liquid-glass-ui
+          path: liquid-glass-ui
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
