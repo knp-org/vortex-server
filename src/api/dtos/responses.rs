@@ -65,6 +65,16 @@ pub struct SeasonDto {
     pub poster_url: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct BookSeriesDetail {
+    pub id: i64,
+    pub name: String,
+    pub plot: Option<String>,
+    pub poster_url: Option<String>,
+    pub backdrop_url: Option<String>,
+    pub rating: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SeriesDetail {
     pub id: i64,
@@ -224,4 +234,5 @@ pub struct BookDetail {
     pub publisher: Option<String>,
     pub published_date: Option<String>,
     pub isbn: Option<String>,
+    pub chapter_number: Option<f64>,
 }

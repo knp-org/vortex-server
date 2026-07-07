@@ -197,15 +197,32 @@ impl CatalogService {
         item_id: i64,
         title: &str,
         page_count: Option<i64>,
+        book_series_id: Option<i64>,
+        chapter_number: Option<f64>,
     ) -> Result<(), AppError> {
         sqlx::query(
-            "INSERT INTO books (item_id, title, page_count)
-             VALUES (?, ?, ?)
-             ON CONFLICT(item_id) DO UPDATE SET page_count = COALESCE(excluded.page_count, books.page_count)"
+            "INSERT INTO books (item_id, title, page_count, book_series_id, chapter_number)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(item_id) DO UPDATE SET 
+             page_count = COALESCE(excluded.page_count, books.page_count),
+             book_series_id = excluded.book_series_id,
+             chapter_number = excluded.chapter_number"
         )
         .bind(item_id).bind(title).bind(page_count)
+        .bind(book_series_id).bind(chapter_number)
         .execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn get_or_create_book_series(pool: &SqlitePool, library_id: i64, name: &str) -> Result<i64, AppError> {
+        sqlx::query("INSERT OR IGNORE INTO book_series (library_id, name) VALUES (?, ?)")
+            .bind(library_id).bind(name)
+            .execute(pool).await?;
+
+        let id: i64 = sqlx::query_scalar("SELECT id FROM book_series WHERE library_id = ? AND name = ?")
+            .bind(library_id).bind(name)
+            .fetch_one(pool).await?;
+        Ok(id)
     }
 
     /// Upsert a minimal `music_videos` row (filename title; no external metadata yet).

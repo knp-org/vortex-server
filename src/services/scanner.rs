@@ -112,7 +112,7 @@ pub async fn scan_media(pool: &SqlitePool, target_library_id: Option<i64>, force
         stream::iter(paths)
             .for_each_concurrent(4, |(path, root)| async move {
                 if is_books {
-                    process_book(pool_ref, &path, lib_ref, force_refresh).await;
+                    process_book(pool_ref, &path, &root, lib_ref, force_refresh).await;
                 } else if is_music {
                     process_music(pool_ref, &path, lib_ref, force_refresh).await;
                 } else if is_images {
@@ -254,7 +254,7 @@ async fn item_exists(pool: &SqlitePool, file_path: &str) -> bool {
         .is_some()
 }
 
-async fn process_book(pool: &SqlitePool, path: &Path, library: &Library, force_refresh: bool) {
+async fn process_book(pool: &SqlitePool, path: &Path, root_path: &str, library: &Library, force_refresh: bool) {
     let path_str = path.to_string_lossy().to_string();
     let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string());
 
@@ -277,11 +277,24 @@ async fn process_book(pool: &SqlitePool, path: &Path, library: &Library, force_r
         _ => None,
     };
 
+    let mut book_series_id: Option<i64> = None;
+    let mut chapter_number: Option<f64> = None;
+
+    if let Some((series_name, _, ep_num)) = parse_tv_show_info(path, root_path, &library.name) {
+        // If parse_tv_show_info returned a series name that differs from the library name, it means it's in a folder.
+        if series_name != library.name {
+            if let Ok(id) = CatalogService::get_or_create_book_series(pool, library.id, &series_name).await {
+                book_series_id = Some(id);
+                chapter_number = Some(ep_num as f64);
+            }
+        }
+    }
+
     let item_id = match CatalogService::new(pool.clone()).upsert_item(library.id, "book", &path_str).await {
         Ok(id) => id,
         Err(e) => { tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book item"); return; }
     };
-    if let Err(e) = CatalogService::new(pool.clone()).upsert_book(item_id, &file_stem, page_count).await {
+    if let Err(e) = CatalogService::new(pool.clone()).upsert_book(item_id, &file_stem, page_count, book_series_id, chapter_number).await {
         tracing::warn!(file = %file_stem, error = %e, "Failed to upsert book");
     }
 }

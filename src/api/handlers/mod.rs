@@ -1,3 +1,4 @@
+pub mod book_series;
 pub mod books;
 pub mod common;
 pub mod galleries;

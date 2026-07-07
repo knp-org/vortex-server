@@ -15,6 +15,7 @@ use crate::api::handlers::{
     galleries::{list_galleries, get_gallery, create_gallery, update_gallery, delete_gallery, add_images, remove_image, list_library_images, list_trash, restore_image, purge_image, empty_trash},
     settings::{get_settings, update_setting},
     series::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series},
+    book_series::{get_book_series_detail, get_book_series_chapters},
     providers::{list_providers, get_provider_config, update_provider_config, toggle_provider, reorder_providers, test_provider},
 };
 use crate::api::middleware::auth_middleware;
@@ -112,6 +113,9 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/books/:id/page/:index", get(crate::api::handlers::books::get_book_page))
         .route("/api/v1/books/:id/file", get(crate::api::handlers::books::stream_book_file).head(crate::api::handlers::books::stream_book_file))
         .route("/api/v1/books/:id/reading-mode", axum::routing::post(crate::api::handlers::books::set_reading_mode))
+        // Book Series routes
+        .route("/api/v1/book-series/:id/detail", get(get_book_series_detail))
+        .route("/api/v1/book-series/:id/books", get(get_book_series_chapters))
         // TV Show routes (keyed by series id)
         .route("/api/v1/series", get(get_all_series))
         .route("/api/v1/series/:id/seasons", get(get_series_seasons))

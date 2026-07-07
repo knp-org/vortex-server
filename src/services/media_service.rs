@@ -6,7 +6,7 @@
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::db::libraries::LibraryType;
-use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, MusicVideoDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, AlbumDetail, TrackDto, ArtistDetail, GalleryDetail, ImageDto, ImageDetail};
+use crate::api::dtos::responses::{Card, CreditDto, MovieDetail, MusicVideoDetail, SeriesDetail, SeasonDto, EpisodeDto, BookDetail, BookSeriesDetail, AlbumDetail, TrackDto, ArtistDetail, GalleryDetail, ImageDto, ImageDetail};
 
 /// Read layer over the per-type catalog tables. The free functions below are the
 /// internal query layer; this struct is the public entry point.
@@ -39,6 +39,12 @@ impl MediaService {
     }
     pub async fn series_detail(&self, series_id: i64) -> Result<SeriesDetail, AppError> {
         series_detail(&self.pool, series_id).await
+    }
+    pub async fn book_series_detail(&self, series_id: i64) -> Result<BookSeriesDetail, AppError> {
+        book_series_detail(&self.pool, series_id).await
+    }
+    pub async fn book_series_chapters(&self, series_id: i64) -> Result<Vec<BookDetail>, AppError> {
+        book_series_chapters(&self.pool, series_id).await
     }
     pub async fn series_seasons(&self, series_id: i64) -> Result<Vec<SeasonDto>, AppError> {
         series_seasons(&self.pool, series_id).await
@@ -165,10 +171,14 @@ async fn list_library(pool: &SqlitePool, library_id: i64, library_type: &Library
         ).bind(library_id).fetch_all(pool).await?,
 
         LibraryType::Books => sqlx::query_as::<_, Card>(
-            "SELECT mi.id, 'book' AS kind, b.title, b.poster_url, NULL AS year, NULL AS stream_url
+            "SELECT id, 'book_series' AS kind, name AS title, poster_url, NULL AS year, NULL AS stream_url
+             FROM book_series WHERE library_id = ?
+             UNION ALL
+             SELECT mi.id, 'book' AS kind, b.title, b.poster_url, NULL AS year, NULL AS stream_url
              FROM media_items mi JOIN books b ON b.item_id = mi.id
-             WHERE mi.library_id = ? ORDER BY b.title"
-        ).bind(library_id).fetch_all(pool).await?,
+             WHERE mi.library_id = ? AND b.book_series_id IS NULL
+             ORDER BY title"
+        ).bind(library_id).bind(library_id).fetch_all(pool).await?,
 
         LibraryType::Music => sqlx::query_as::<_, Card>(
             "SELECT id, 'album' AS kind, title, cover_url AS poster_url, year, NULL AS stream_url
@@ -471,7 +481,44 @@ async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, AppE
         publisher: b.publisher,
         published_date: b.published_date,
         isbn: b.isbn,
+        chapter_number: b.chapter_number,
     })
+}
+
+async fn book_series_detail(pool: &SqlitePool, series_id: i64) -> Result<BookSeriesDetail, AppError> {
+    let s = sqlx::query_as::<_, crate::models::db::book_series::BookSeries>(
+        "SELECT * FROM book_series WHERE id = ?"
+    ).bind(series_id).fetch_optional(pool).await?
+        .ok_or_else(|| AppError::NotFound(format!("Book Series {} not found", series_id)))?;
+
+    Ok(BookSeriesDetail {
+        id: s.id,
+        name: s.name,
+        plot: s.plot,
+        poster_url: s.poster_url,
+        backdrop_url: s.backdrop_url,
+        rating: s.rating,
+    })
+}
+
+async fn book_series_chapters(pool: &SqlitePool, series_id: i64) -> Result<Vec<BookDetail>, AppError> {
+    let books = sqlx::query_as::<_, crate::models::db::books::Book>(
+        &format!("SELECT {} FROM media_items mi JOIN books b ON b.item_id = mi.id WHERE b.book_series_id = ? ORDER BY b.chapter_number, b.title",
+            crate::models::db::books::BOOK_SELECT)
+    ).bind(series_id).fetch_all(pool).await?;
+
+    Ok(books.into_iter().map(|b| BookDetail {
+        id: b.item_id,
+        title: b.title,
+        plot: b.plot,
+        poster_url: b.poster_url,
+        page_count: b.page_count,
+        reading_mode: b.reading_mode,
+        publisher: b.publisher,
+        published_date: b.published_date,
+        isbn: b.isbn,
+        chapter_number: b.chapter_number,
+    }).collect())
 }
 
 // ── Music reads ────────────────────────────────────────────────────────────

@@ -24,10 +24,12 @@ pub struct Book {
     pub publisher: Option<String>,
     pub published_date: Option<String>,
     pub isbn: Option<String>,
+    pub book_series_id: Option<i64>,
+    pub chapter_number: Option<f64>,
 }
 
 /// Columns selected to hydrate a [`Book`] by joining `media_items` (aliased `mi`)
 /// with `books` (aliased `b`). Kept in one place so the query shape lives once.
 pub const BOOK_SELECT: &str = "mi.id AS item_id, mi.library_id, mi.file_path, \
     b.title, b.plot, b.poster_url, b.page_count, b.reading_mode, \
-    b.publisher, b.published_date, b.isbn";
+    b.publisher, b.published_date, b.isbn, b.book_series_id, b.chapter_number";

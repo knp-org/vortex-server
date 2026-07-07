@@ -3,6 +3,7 @@ pub mod movies;
 pub mod series;
 pub mod episodes;
 pub mod books;
+pub mod book_series;
 pub mod artists;
 pub mod albums;
 pub mod tracks;
