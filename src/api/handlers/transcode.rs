@@ -2,12 +2,13 @@ use axum::{
     extract::{Path, State, Query},
     http::{header, HeaderMap},
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::process::Stdio;
 use std::sync::OnceLock;
+use crate::api::middleware::AuthUser;
 use crate::error::AppError;
 use crate::services::settings_service::SettingsService;
 use crate::services::progress_service::ProgressService;
@@ -132,8 +133,10 @@ async fn get_active_encoder(pool: &SqlitePool) -> &'static EncoderConfig {
 
 // API Handlers
 pub async fn get_transcode_settings(
+    Extension(auth_user): Extension<AuthUser>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<TranscodeSettings>, AppError> {
+    auth_user.require_admin()?;
     let available = get_available_encoders().await;
     let _active = get_active_encoder(&pool).await;
     let settings = SettingsService::new(pool.clone());
@@ -172,9 +175,11 @@ pub async fn get_transcode_settings(
 }
 
 pub async fn update_transcode_settings(
+    Extension(auth_user): Extension<AuthUser>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateTranscodeSettings>,
 ) -> Result<Json<TranscodeSettings>, AppError> {
+    auth_user.require_admin()?;
     // Validate
     let available = get_available_encoders().await;
     let valid = payload.encoder == "Auto" || available.iter().any(|e| e.name == payload.encoder);
@@ -204,7 +209,7 @@ pub async fn update_transcode_settings(
     let bitrate_val = payload.max_bitrate.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string());
     settings.upsert_global("transcode_bitrate", &bitrate_val).await?;
 
-    get_transcode_settings(State(pool)).await
+    get_transcode_settings(Extension(auth_user), State(pool)).await
 }
 
 

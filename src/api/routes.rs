@@ -8,14 +8,14 @@ use tower_http::cors::CorsLayer;
 use sqlx::SqlitePool;
 use crate::api::handlers::{
     library::{get_libraries, create_library, delete_library, scan_all_libraries, list_directories, browse_library, scan_library, refresh_library, get_library_providers, update_library_providers},
-    media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library, get_track_lyrics},
+    media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library, get_track_lyrics, update_media_metadata},
     playback::{stream_video, update_progress, get_continue_watching, get_media_progress, get_subtitles, stream_subtitle, stream_embedded_subtitle, get_audio_tracks, get_thumbnail},
     transcode::{get_stream_info, get_hls_playlist, get_hls_segment},
     images::{get_image, get_image_file, update_image},
     galleries::{list_galleries, get_gallery, create_gallery, update_gallery, delete_gallery, add_images, remove_image, list_library_images, list_trash, restore_image, purge_image, empty_trash},
     settings::{get_settings, update_setting},
-    series::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series},
-    book_series::{get_book_series_detail, get_book_series_chapters},
+    series::{get_all_series, get_series_seasons, get_season_episodes, get_series_detail, refresh_series_metadata, identify_series, update_series_metadata},
+    book_series::{get_book_series_detail, get_book_series_chapters, update_book_series_metadata},
     providers::{list_providers, get_provider_config, update_provider_config, toggle_provider, reorder_providers, test_provider},
 };
 use crate::api::middleware::auth_middleware;
@@ -70,7 +70,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/libraries/:id/tracks", get(crate::api::handlers::media::get_library_tracks))
         .route("/api/v1/libraries/:id/browse", get(browse_library))
         .route("/api/v1/libraries/:id/providers", get(get_library_providers).put(update_library_providers))
-        .route("/api/v1/media/:id", get(get_media_details))
+        .route("/api/v1/media/:id", get(get_media_details).put(update_media_metadata))
         // .route("/api/v1/media/:id/thumbnail", get(get_thumbnail)) - Moved to public
         .route("/api/v1/media/:id/refresh", axum::routing::post(refresh_media_metadata))
         .route("/api/v1/media/:id/identify", axum::routing::post(identify_media))
@@ -96,6 +96,12 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/me/playlists/:id", get(crate::api::handlers::playlists::get_playlist).delete(crate::api::handlers::playlists::delete_playlist))
         .route("/api/v1/me/playlists/:id/tracks", axum::routing::post(crate::api::handlers::playlists::add_track))
         .route("/api/v1/me/playlists/:id/tracks/:item_id", axum::routing::delete(crate::api::handlers::playlists::remove_track))
+        // Hidden ("other") playlists: set a PIN, then trade it for a short-lived
+        // unlock token sent back via the `X-Vortex-Unlock` header.
+        // Kept off the `/playlists/:id` path so a literal segment can never
+        // shadow a playlist id.
+        .route("/api/v1/me/hidden/pin", get(crate::api::handlers::playlists::get_pin_status).put(crate::api::handlers::playlists::set_pin))
+        .route("/api/v1/me/hidden/unlock", axum::routing::post(crate::api::handlers::playlists::unlock))
 
         .route("/api/v1/settings", get(get_settings).post(update_setting))
         .route("/api/v1/settings/transcode", get(crate::api::handlers::transcode::get_transcode_settings).post(crate::api::handlers::transcode::update_transcode_settings))
@@ -115,11 +121,13 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/books/:id/reading-mode", axum::routing::post(crate::api::handlers::books::set_reading_mode))
         // Book Series routes
         .route("/api/v1/book-series/:id/detail", get(get_book_series_detail))
+        .route("/api/v1/book-series/:id", axum::routing::put(update_book_series_metadata))
         .route("/api/v1/book-series/:id/books", get(get_book_series_chapters))
         // TV Show routes (keyed by series id)
         .route("/api/v1/series", get(get_all_series))
         .route("/api/v1/series/:id/seasons", get(get_series_seasons))
         .route("/api/v1/series/:id/detail", get(get_series_detail))
+        .route("/api/v1/series/:id", axum::routing::put(update_series_metadata))
         .route("/api/v1/series/:id/refresh", axum::routing::post(refresh_series_metadata))
         .route("/api/v1/series/:id/identify", axum::routing::post(identify_series))
         .route("/api/v1/series/:id/season/:num", get(get_season_episodes))

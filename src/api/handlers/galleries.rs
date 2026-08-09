@@ -7,13 +7,14 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
 use crate::api::dtos::responses::{Card, GalleryDetail, ImageDto};
+use crate::api::middleware::AuthUser;
 use crate::error::AppError;
 use crate::services::gallery_service::GalleryService;
 use crate::services::media_service::MediaService;
@@ -57,9 +58,11 @@ pub struct CreateGalleryRequest {
 }
 
 pub async fn create_gallery(
+    Extension(auth_user): Extension<AuthUser>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<CreateGalleryRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    auth_user.require_admin()?;
     let id = GalleryService::new(pool)
         .create(payload.library_id, &payload.name, payload.description.as_deref())
         .await?;
@@ -77,10 +80,12 @@ pub struct UpdateGalleryRequest {
 }
 
 pub async fn update_gallery(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateGalleryRequest>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     GalleryService::new(pool)
         .update(id, payload.name.as_deref(), payload.description.as_deref(), payload.cover_url.as_deref())
         .await?;
@@ -88,9 +93,11 @@ pub async fn update_gallery(
 }
 
 pub async fn delete_gallery(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     GalleryService::new(pool).delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -102,10 +109,12 @@ pub struct AddImagesRequest {
 
 /// Add (move) a set of photos into this gallery.
 pub async fn add_images(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<AddImagesRequest>,
 ) -> Result<Json<Value>, AppError> {
+    auth_user.require_admin()?;
     let moved = GalleryService::new(pool).add_images(id, &payload.item_ids).await?;
     Ok(Json(json!({ "moved": moved })))
 }
@@ -113,9 +122,11 @@ pub async fn add_images(
 /// Remove a photo from this gallery into the recycle bin (the photo is kept and
 /// can be restored; see the trash endpoints below).
 pub async fn remove_image(
+    Extension(auth_user): Extension<AuthUser>,
     Path((id, item_id)): Path<(i64, i64)>,
     State(pool): State<SqlitePool>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     GalleryService::new(pool).remove_image(id, item_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -132,18 +143,22 @@ pub async fn list_trash(
 
 /// Restore a photo out of the recycle bin, back into the album it came from.
 pub async fn restore_image(
+    Extension(auth_user): Extension<AuthUser>,
     Path(item_id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     GalleryService::new(pool).restore_image(item_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Permanently delete a single photo from the recycle bin.
 pub async fn purge_image(
+    Extension(auth_user): Extension<AuthUser>,
     Path(item_id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     GalleryService::new(pool).purge_image(item_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -151,9 +166,11 @@ pub async fn purge_image(
 /// Empty the recycle bin for an Images library (permanently delete all trashed
 /// photos). Returns how many were removed.
 pub async fn empty_trash(
+    Extension(auth_user): Extension<AuthUser>,
     Path(library_id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Value>, AppError> {
+    auth_user.require_admin()?;
     let purged = GalleryService::new(pool).empty_trash(library_id).await?;
     Ok(Json(json!({ "purged": purged })))
 }

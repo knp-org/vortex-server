@@ -39,14 +39,31 @@ impl SettingsService {
         Ok(())
     }
 
+    /// A user's preferences. Keys ending in `_hash` hold credential material
+    /// (e.g. the hidden-playlist PIN) and are never handed back to the client.
     pub async fn list_for_user(&self, user_id: i64) -> Result<Vec<Setting>, AppError> {
-        Ok(sqlx::query_as::<_, Setting>("SELECT key, value FROM user_settings WHERE user_id = ?")
+        Ok(sqlx::query_as::<_, Setting>(
+            "SELECT key, value FROM user_settings WHERE user_id = ? AND key NOT LIKE '%\\_hash' ESCAPE '\\'"
+        )
             .bind(user_id)
             .fetch_all(&self.pool)
             .await?)
     }
 
+    /// Write a user preference. `_hash` keys are reserved for credential
+    /// material written by the service that owns it — letting a client set one
+    /// directly would let it plant a hash it knows the input for (e.g. reset the
+    /// hidden-playlist PIN without proving the current one).
     pub async fn upsert_for_user(&self, user_id: i64, key: &str, value: &str) -> Result<(), AppError> {
+        if key.ends_with("_hash") {
+            return Err(AppError::Forbidden(format!("Setting '{}' is not client-writable", key)));
+        }
+        self.upsert_for_user_unchecked(user_id, key, value).await
+    }
+
+    /// As [`Self::upsert_for_user`], but permitted to write reserved keys.
+    /// Only for services that own the credential they are storing.
+    pub async fn upsert_for_user_unchecked(&self, user_id: i64, key: &str, value: &str) -> Result<(), AppError> {
         sqlx::query(
             "INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?)
              ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value"

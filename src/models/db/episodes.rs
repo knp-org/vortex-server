@@ -13,4 +13,6 @@ pub struct Episode {
     pub still_url: Option<String>,
     pub runtime: Option<i64>,
     pub air_date: Option<String>,
+    /// Hand-edited: automatic metadata refreshes skip this row.
+    pub metadata_locked: bool,
 }

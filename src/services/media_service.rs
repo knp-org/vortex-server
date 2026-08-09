@@ -88,6 +88,9 @@ impl MediaService {
     pub async fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<TrackDto>, AppError> {
         playlist_tracks(&self.pool, playlist_id).await
     }
+    pub async fn playlist_items(&self, playlist_id: i64) -> Result<Vec<Card>, AppError> {
+        playlist_items(&self.pool, playlist_id).await
+    }
     pub async fn movie_provider_lookup(&self, item_id: i64) -> Result<(Option<String>, Option<String>), AppError> {
         movie_provider_lookup(&self.pool, item_id).await
     }
@@ -324,6 +327,7 @@ async fn movie_detail(pool: &SqlitePool, item_id: i64) -> Result<MovieDetail, Ap
         cast: item_credits(pool, item_id).await?,
         stream_url: stream_url(item_id),
         file_name,
+        metadata_locked: row.metadata_locked,
     })
 }
 
@@ -405,6 +409,7 @@ async fn series_detail(pool: &SqlitePool, series_id: i64) -> Result<SeriesDetail
         tags: series_tags(pool, series_id).await?,
         cast: series_credits(pool, series_id).await?,
         seasons: season_list(pool, series_id).await?,
+        metadata_locked: s.metadata_locked,
     })
 }
 
@@ -435,12 +440,13 @@ async fn season_episodes(pool: &SqlitePool, series_id: i64, season_number: i64) 
         runtime: e.runtime,
         air_date: e.air_date,
         stream_url: stream_url(e.item_id),
+        metadata_locked: e.metadata_locked,
     }).collect())
 }
 
 async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDto, AppError> {
-    let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>)>(
-        "SELECT s.id, s.name, se.season_number, e.episode_number, e.title, e.plot, e.still_url, e.runtime, e.air_date
+    let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, bool)>(
+        "SELECT s.id, s.name, se.season_number, e.episode_number, e.title, e.plot, e.still_url, e.runtime, e.air_date, e.metadata_locked
          FROM episodes e
          LEFT JOIN seasons se ON se.id = e.season_id
          LEFT JOIN series s ON s.id = se.series_id
@@ -448,7 +454,7 @@ async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDto, A
     ).bind(item_id).fetch_optional(pool).await?
         .ok_or_else(|| AppError::NotFound(format!("Episode {} not found", item_id)))?;
 
-    let (series_id, series_name, season_number, episode_number, title, plot, still_url, runtime, air_date) = row;
+    let (series_id, series_name, season_number, episode_number, title, plot, still_url, runtime, air_date, metadata_locked) = row;
     Ok(EpisodeDto {
         id: item_id,
         series_id,
@@ -461,6 +467,7 @@ async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDto, A
         runtime,
         air_date,
         stream_url: stream_url(item_id),
+        metadata_locked,
     })
 }
 
@@ -470,6 +477,12 @@ async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, AppE
             crate::models::db::books::BOOK_SELECT)
     ).bind(item_id).fetch_optional(pool).await?
         .ok_or_else(|| AppError::NotFound(format!("Book {} not found", item_id)))?;
+
+    let book_series_name = match b.book_series_id {
+        Some(sid) => sqlx::query_as::<_, (String,)>("SELECT name FROM book_series WHERE id = ?")
+            .bind(sid).fetch_optional(pool).await?.map(|r| r.0),
+        None => None,
+    };
 
     Ok(BookDetail {
         id: b.item_id,
@@ -482,6 +495,9 @@ async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, AppE
         published_date: b.published_date,
         isbn: b.isbn,
         chapter_number: b.chapter_number,
+        book_series_id: b.book_series_id,
+        book_series_name,
+        metadata_locked: b.metadata_locked,
     })
 }
 
@@ -501,11 +517,51 @@ async fn book_series_detail(pool: &SqlitePool, series_id: i64) -> Result<BookSer
     })
 }
 
+/// Compare strings so embedded numbers sort numerically ("Chapter 2" < "Chapter 10").
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < ab.len() && j < bb.len() {
+        if ab[i].is_ascii_digit() && bb[j].is_ascii_digit() {
+            let i2 = ab[i..].iter().position(|c| !c.is_ascii_digit()).map_or(ab.len(), |p| i + p);
+            let j2 = bb[j..].iter().position(|c| !c.is_ascii_digit()).map_or(bb.len(), |p| j + p);
+            let na = a[i..i2].trim_start_matches('0');
+            let nb = b[j..j2].trim_start_matches('0');
+            let ord = na.len().cmp(&nb.len()).then_with(|| na.cmp(nb));
+            if ord != std::cmp::Ordering::Equal { return ord; }
+            i = i2;
+            j = j2;
+        } else {
+            let ord = ab[i].to_ascii_lowercase().cmp(&bb[j].to_ascii_lowercase());
+            if ord != std::cmp::Ordering::Equal { return ord; }
+            i += 1;
+            j += 1;
+        }
+    }
+    (ab.len() - i).cmp(&(bb.len() - j))
+}
+
 async fn book_series_chapters(pool: &SqlitePool, series_id: i64) -> Result<Vec<BookDetail>, AppError> {
-    let books = sqlx::query_as::<_, crate::models::db::books::Book>(
-        &format!("SELECT {} FROM media_items mi JOIN books b ON b.item_id = mi.id WHERE b.book_series_id = ? ORDER BY b.chapter_number, b.title",
+    let mut books = sqlx::query_as::<_, crate::models::db::books::Book>(
+        &format!("SELECT {} FROM media_items mi JOIN books b ON b.item_id = mi.id WHERE b.book_series_id = ?",
             crate::models::db::books::BOOK_SELECT)
     ).bind(series_id).fetch_all(pool).await?;
+
+    // Chapter number first, then a natural title compare so "Chapter 2"
+    // precedes "Chapter 10" even when numbers are missing or tied.
+    books.sort_by(|x, y| {
+        match (x.chapter_number, y.chapter_number) {
+            (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| natural_cmp(x.title.as_deref().unwrap_or(""), y.title.as_deref().unwrap_or("")))
+    });
+
+    let book_series_name = sqlx::query_as::<_, (String,)>("SELECT name FROM book_series WHERE id = ?")
+        .bind(series_id).fetch_optional(pool).await?.map(|r| r.0);
 
     Ok(books.into_iter().map(|b| BookDetail {
         id: b.item_id,
@@ -518,6 +574,9 @@ async fn book_series_chapters(pool: &SqlitePool, series_id: i64) -> Result<Vec<B
         published_date: b.published_date,
         isbn: b.isbn,
         chapter_number: b.chapter_number,
+        book_series_id: b.book_series_id,
+        book_series_name: book_series_name.clone(),
+        metadata_locked: b.metadata_locked,
     }).collect())
 }
 
@@ -790,6 +849,54 @@ async fn playlist_tracks(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<Trac
         id, track_number, disc_number, title, artist, album, cover_url, duration,
         stream_url: stream_url(id),
     }).collect())
+}
+
+/// Every member of a playlist, in playlist order, as polymorphic cards.
+///
+/// Unlike [`playlist_tracks`] this does not assume the members are music, so it
+/// serves `movie` / `tvshow` / `music_video` / mixed `other` playlists. Members
+/// whose detail row has since been deleted simply drop out of the result.
+async fn playlist_items(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<Card>, AppError> {
+    Ok(sqlx::query_as::<_, Card>(
+        "SELECT id, kind, title, poster_url, year, stream_url FROM (
+            SELECT mi.id, 'movie' AS kind, m.title, m.poster_url, m.year,
+                   ('/api/v1/stream/' || mi.id) AS stream_url, pt.position AS position
+            FROM playlist_tracks pt
+            JOIN media_items mi ON mi.id = pt.item_id
+            JOIN movies m ON m.item_id = mi.id
+            WHERE pt.playlist_id = ?
+            UNION ALL
+            SELECT mi.id, 'episode' AS kind,
+                   COALESCE(s.name || ' - ', '') || COALESCE(e.title, '') AS title,
+                   COALESCE(e.still_url, se.poster_url, s.poster_url) AS poster_url,
+                   s.year,
+                   ('/api/v1/stream/' || mi.id) AS stream_url, pt.position
+            FROM playlist_tracks pt
+            JOIN media_items mi ON mi.id = pt.item_id
+            JOIN episodes e ON e.item_id = mi.id
+            LEFT JOIN seasons se ON se.id = e.season_id
+            LEFT JOIN series s ON s.id = se.series_id
+            WHERE pt.playlist_id = ?
+            UNION ALL
+            SELECT mi.id, 'music_video' AS kind, mv.title, mv.poster_url, mv.year,
+                   ('/api/v1/stream/' || mi.id) AS stream_url, pt.position
+            FROM playlist_tracks pt
+            JOIN media_items mi ON mi.id = pt.item_id
+            JOIN music_videos mv ON mv.item_id = mi.id
+            WHERE pt.playlist_id = ?
+            UNION ALL
+            SELECT mi.id, 'track' AS kind, t.title, al.cover_url AS poster_url, al.year,
+                   ('/api/v1/stream/' || mi.id) AS stream_url, pt.position
+            FROM playlist_tracks pt
+            JOIN media_items mi ON mi.id = pt.item_id
+            JOIN tracks t ON t.item_id = mi.id
+            LEFT JOIN albums al ON al.id = t.album_id
+            WHERE pt.playlist_id = ?
+        ) ORDER BY position"
+    )
+    .bind(playlist_id).bind(playlist_id).bind(playlist_id).bind(playlist_id)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// Look up the provider id stored on a movie or series, for metadata refresh.

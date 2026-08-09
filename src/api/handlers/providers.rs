@@ -5,10 +5,11 @@
 
 use axum::{
     extract::{Path, State},
-    Json,
+    Extension, Json,
 };
 use sqlx::SqlitePool;
 use serde::{Deserialize, Serialize};
+use crate::api::middleware::AuthUser;
 use crate::error::AppError;
 use crate::metadata_providers::manifest::{FieldType, ProviderManifest};
 use crate::metadata_providers::registry;
@@ -70,8 +71,10 @@ pub struct ReorderRequest {
 /// `GET /api/v1/providers`
 /// List all registry providers with their manifest + current enabled/priority.
 pub async fn list_providers(
+    Extension(auth_user): Extension<AuthUser>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<Vec<ProviderInfo>>, AppError> {
+    auth_user.require_admin()?;
     let configs: Vec<ProviderConfig> = ProviderConfigsService::new(pool)
         .list_all()
         .await
@@ -99,9 +102,11 @@ pub async fn list_providers(
 /// `GET /api/v1/providers/:id/config`
 /// Get current config for a provider. Secret fields are masked.
 pub async fn get_provider_config(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<String>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<ProviderConfigResponse>, AppError> {
+    auth_user.require_admin()?;
     let manifest = registry::manifest(&id)
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 
@@ -143,10 +148,12 @@ pub async fn get_provider_config(
 /// `PUT /api/v1/providers/:id/config`
 /// Update config for a provider. Merge semantics: masked/empty secrets are preserved.
 pub async fn update_provider_config(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<String>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateConfigRequest>,
 ) -> Result<Json<ProviderConfigResponse>, AppError> {
+    auth_user.require_admin()?;
     let manifest = registry::manifest(&id)
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 
@@ -184,16 +191,18 @@ pub async fn update_provider_config(
     service.upsert_config(&id, enabled, priority, &config_str).await?;
 
     // Return the masked version
-    get_provider_config(Path(id), State(pool)).await
+    get_provider_config(Extension(auth_user), Path(id), State(pool)).await
 }
 
 /// `POST /api/v1/providers/:id/toggle`
 /// Enable or disable a provider.
 pub async fn toggle_provider(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<String>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<ToggleRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    auth_user.require_admin()?;
     let _ = registry::manifest(&id)
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 
@@ -209,9 +218,11 @@ pub async fn toggle_provider(
 /// `PUT /api/v1/providers/order`
 /// Reorder provider priorities. First in the list gets priority 10, second 20, etc.
 pub async fn reorder_providers(
+    Extension(auth_user): Extension<AuthUser>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<ReorderRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    auth_user.require_admin()?;
     let service = ProviderConfigsService::new(pool);
     for (i, provider_id) in payload.order.iter().enumerate() {
         let priority = ((i + 1) * 10) as i32;
@@ -224,9 +235,11 @@ pub async fn reorder_providers(
 /// `POST /api/v1/providers/:id/test`
 /// Build the provider from its stored config and run health_check().
 pub async fn test_provider(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<String>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<TestResult>, AppError> {
+    auth_user.require_admin()?;
     let _ = registry::manifest(&id)
         .ok_or_else(|| AppError::NotFound(format!("Unknown provider: {}", id)))?;
 

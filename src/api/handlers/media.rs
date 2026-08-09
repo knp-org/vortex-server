@@ -1,10 +1,12 @@
 use axum::{
     extract::{Path, State},
-    Json,
+    Extension, Json,
 };
 use sqlx::SqlitePool;
 use serde_json::json;
 use crate::error::AppError;
+use crate::api::middleware::AuthUser;
+use crate::models::metadata::MetadataPatch;
 use crate::services::{media_service, catalog_service::CatalogService};
 use crate::services::library_service::LibraryService;
 use crate::api::dtos::responses::{Card, AlbumDetail, ArtistDetail};
@@ -79,6 +81,13 @@ pub async fn refresh_media_metadata(
 ) -> Result<Json<serde_json::Value>, AppError> {
     use crate::services::metadata_service::MetadataService;
 
+    // A hand-edited item is pinned; refreshing it would silently discard the edit.
+    if CatalogService::new(pool.clone()).movie_locked(id).await? {
+        return Err(AppError::BadRequest(
+            "This item's metadata is locked by a manual edit. Unlock it (or re-identify) to refresh.".into(),
+        ));
+    }
+
     let svc = MetadataService::new(pool.clone());
     let (title, provider_ids) = media_service::MediaService::new(pool.clone()).movie_provider_lookup(id).await?;
 
@@ -109,12 +118,47 @@ pub async fn refresh_media_metadata(
     get_media_details(State(pool), Path(id)).await
 }
 
+/// Save a hand-authored metadata edit, dispatched by the item's type.
+///
+/// The body is a sparse patch: absent fields are left alone, `null` clears a field.
+/// Saving pins the item (`metadata_locked`) unless the caller says otherwise, so a
+/// later refresh or rescan can't overwrite the edit.
+pub async fn update_media_metadata(
+    Extension(auth_user): Extension<AuthUser>,
+    State(pool): State<SqlitePool>,
+    Path(id): Path<i64>,
+    Json(mut patch): Json<MetadataPatch>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    auth_user.require_admin()?;
+    if patch.is_empty() {
+        return Err(AppError::BadRequest("No metadata fields to update".into()));
+    }
+    patch.metadata_locked.get_or_insert(true);
+
+    let catalog = CatalogService::new(pool.clone());
+    let item_type = media_service::MediaService::new(pool.clone()).item_type(id).await?;
+    match item_type.as_str() {
+        "book" => catalog.patch_book(id, &patch).await?,
+        "episode" => catalog.patch_episode(id, &patch).await?,
+        "music_video" => catalog.patch_music_video(id, &patch).await?,
+        "image" => catalog.patch_image(id, &patch).await?,
+        "track" => return Err(AppError::BadRequest(
+            "Track metadata is read from the file's tags and can't be edited here".into(),
+        )),
+        _ => catalog.patch_movie(id, &patch).await?,
+    }
+    get_media_details(State(pool), Path(id)).await
+}
+
 pub async fn identify_media(
     State(pool): State<SqlitePool>,
     Path(id): Path<i64>,
     Json(payload): Json<IdentifyRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     use crate::services::metadata_service::MetadataService;
+
+    // Identifying is an explicit "use this entry instead" — it overrides a lock.
+    CatalogService::new(pool.clone()).unlock_movie(id).await?;
 
     let media_type = payload.media_type.as_deref().or(Some("movie"));
     let meta = MetadataService::new(pool.clone())

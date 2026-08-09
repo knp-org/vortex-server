@@ -22,4 +22,6 @@ pub struct Movie {
     pub backdrop_url: Option<String>,
     pub trailer_url: Option<String>,
     pub provider_ids: Option<String>,
+    /// Hand-edited: automatic metadata refreshes skip this row.
+    pub metadata_locked: bool,
 }

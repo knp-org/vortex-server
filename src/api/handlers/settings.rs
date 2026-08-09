@@ -17,17 +17,25 @@ pub struct UpdateSettingRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Global, server-wide settings (provider keys, scan config). Admin-facing.
+// Global, server-wide settings (provider keys, scan config). Admin-only: these
+// rows hold provider API keys in cleartext, so they are neither readable nor
+// writable by ordinary users. Per-user preferences live below.
 // ---------------------------------------------------------------------------
 
-pub async fn get_settings(State(pool): State<SqlitePool>) -> Result<Json<Vec<Setting>>, AppError> {
+pub async fn get_settings(
+    State(pool): State<SqlitePool>,
+    Extension(auth_user): Extension<AuthUser>,
+) -> Result<Json<Vec<Setting>>, AppError> {
+    auth_user.require_admin()?;
     Ok(Json(SettingsService::new(pool).list_global().await?))
 }
 
 pub async fn update_setting(
     State(pool): State<SqlitePool>,
+    Extension(auth_user): Extension<AuthUser>,
     Json(payload): Json<UpdateSettingRequest>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     SettingsService::new(pool).upsert_global(&payload.key, &payload.value).await?;
     Ok(StatusCode::OK)
 }

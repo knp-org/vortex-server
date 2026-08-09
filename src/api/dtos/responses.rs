@@ -55,6 +55,8 @@ pub struct MovieDetail {
     pub cast: Vec<CreditDto>,
     pub stream_url: String,
     pub file_name: Option<String>,
+    /// True when a user hand-edited this item, pinning it against auto-refresh.
+    pub metadata_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +97,8 @@ pub struct SeriesDetail {
     pub tags: Vec<String>,
     pub cast: Vec<CreditDto>,
     pub seasons: Vec<SeasonDto>,
+    /// True when a user hand-edited this series, pinning it against auto-refresh.
+    pub metadata_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +114,8 @@ pub struct EpisodeDto {
     pub runtime: Option<i64>,
     pub air_date: Option<String>,
     pub stream_url: String,
+    /// True when a user hand-edited this episode, pinning it against auto-refresh.
+    pub metadata_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +148,8 @@ pub struct MusicVideoDetail {
 pub struct PlaylistDto {
     pub id: i64,
     pub name: String,
+    /// `music` | `movie` | `tvshow` | `music_video` | `other`.
+    pub kind: String,
     pub track_count: i64,
     pub created_at: Option<chrono::NaiveDateTime>,
 }
@@ -150,7 +158,14 @@ pub struct PlaylistDto {
 pub struct PlaylistDetail {
     pub id: i64,
     pub name: String,
+    pub kind: String,
+    /// Populated only for `music` playlists, so existing audio clients keep
+    /// their richer track shape (artist/album/disc number).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tracks: Vec<TrackDto>,
+    /// Every member, in playlist order, in the same polymorphic card shape the
+    /// rest of the API uses. Always populated.
+    pub items: Vec<Card>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,4 +250,10 @@ pub struct BookDetail {
     pub published_date: Option<String>,
     pub isbn: Option<String>,
     pub chapter_number: Option<f64>,
+    /// Book-series membership (`book_series` table — unrelated to TV `series`);
+    /// `None` for standalone books.
+    pub book_series_id: Option<i64>,
+    pub book_series_name: Option<String>,
+    /// True when a user hand-edited this book, pinning it against auto-refresh.
+    pub metadata_locked: bool,
 }

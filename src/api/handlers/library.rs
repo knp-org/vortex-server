@@ -39,61 +39,77 @@ pub async fn get_libraries(State(pool): State<SqlitePool>) -> Result<Json<Vec<Li
 }
 
 pub async fn create_library(
+    Extension(auth_user): Extension<AuthUser>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<CreateLibraryRequest>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let service = LibraryService::new(pool);
     service.create(payload.name, payload.paths, payload.library_type, payload.default_reading_mode).await?;
     Ok(StatusCode::CREATED)
 }
 
 pub async fn delete_library(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let service = LibraryService::new(pool);
     service.delete(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn update_library(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateLibraryRequest>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let service = LibraryService::new(pool);
     service.update(id, payload.name, payload.paths, payload.default_reading_mode).await?;
     Ok(StatusCode::OK)
 }
 
-pub async fn scan_all_libraries(State(pool): State<SqlitePool>) -> StatusCode {
+/// Scanning walks the filesystem and rewrites the catalog, so it is admin-only —
+/// as are the two scoped variants below.
+pub async fn scan_all_libraries(
+    Extension(auth_user): Extension<AuthUser>,
+    State(pool): State<SqlitePool>,
+) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let pool_clone = pool.clone();
     tokio::spawn(async move {
         scan_media(&pool_clone, None, false).await;
     });
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 pub async fn scan_library(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
-) -> StatusCode {
+) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let pool_clone = pool.clone();
     tokio::spawn(async move {
         scan_media(&pool_clone, Some(id), false).await;
     });
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 pub async fn refresh_library(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
-) -> StatusCode {
+) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let pool_clone = pool.clone();
     tokio::spawn(async move {
         scan_media(&pool_clone, Some(id), true).await;
     });
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// Browse server-side directories for library-path configuration. Admin-only:
@@ -187,10 +203,12 @@ pub async fn get_library_providers(
 }
 
 pub async fn update_library_providers(
+    Extension(auth_user): Extension<AuthUser>,
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
     Json(payload): Json<UpdateLibraryProvidersRequest>,
 ) -> Result<StatusCode, AppError> {
+    auth_user.require_admin()?;
     let providers: Vec<(String, i32, bool)> = payload.providers
         .into_iter()
         .map(|p| (p.provider_id, p.priority, p.enabled))

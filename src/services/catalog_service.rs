@@ -7,7 +7,7 @@
 
 use sqlx::SqlitePool;
 use crate::error::AppError;
-use crate::models::metadata::NormalizedMetadata;
+use crate::models::metadata::{MetadataPatch, NormalizedMetadata, Patch};
 
 pub struct CatalogService {
     pool: SqlitePool,
@@ -54,6 +54,8 @@ impl CatalogService {
     /// Upsert the `movies` detail row for `item_id` from fetched metadata, and refresh
     /// its normalized genres/tags/credits.
     pub async fn apply_movie_metadata(&self, item_id: i64, meta: &NormalizedMetadata) -> Result<(), AppError> {
+        // A hand-edited movie is never overwritten by provider data.
+        if self.is_locked("movies", "item_id", item_id).await? { return Ok(()); }
         let pool = &self.pool;
         let studio_id = match &meta.studio {
             Some(s) if !s.is_empty() => Some(get_or_create_studio(pool, s).await?),
@@ -116,6 +118,7 @@ impl CatalogService {
 
     /// Apply series-level metadata + normalized genres/tags/credits.
     pub async fn apply_series_metadata(&self, series_id: i64, meta: &NormalizedMetadata) -> Result<(), AppError> {
+        if self.is_locked("series", "id", series_id).await? { return Ok(()); }
         let pool = &self.pool;
         let provider_ids = meta.provider_ids.as_ref().map(|v| v.to_string());
         let studio_id = match &meta.studio {
@@ -185,6 +188,7 @@ impl CatalogService {
         plot: &str,
         still_url: Option<String>,
     ) -> Result<(), AppError> {
+        if self.is_locked("episodes", "item_id", item_id).await? { return Ok(()); }
         sqlx::query("UPDATE episodes SET title=?, plot=?, still_url=COALESCE(?, still_url) WHERE item_id=?")
             .bind(title).bind(plot).bind(still_url).bind(item_id)
             .execute(&self.pool).await?;
@@ -360,6 +364,279 @@ impl CatalogService {
         sqlx::query("DELETE FROM media_items WHERE id = ?").bind(item_id).execute(&self.pool).await?;
         Ok(())
     }
+
+    // ── Manual metadata edits ──────────────────────────────────────────────────
+    //
+    // A patch writes only the fields the user actually changed (see `MetadataPatch`),
+    // so these build their `SET` list at runtime instead of upserting a whole row.
+    // Column names come from the fixed lists below, never from the request.
+
+    /// Apply a user edit to a movie's detail row.
+    pub async fn patch_movie(&self, item_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let pool = &self.pool;
+        let mut cols = vec![
+            ("title", text(&patch.title)),
+            ("original_title", text(&patch.original_title)),
+            ("year", int(&patch.year)),
+            ("plot", text(&patch.plot)),
+            ("tagline", text(&patch.tagline)),
+            ("runtime", int(&patch.runtime)),
+            ("rating", real(&patch.rating)),
+            ("age_rating", text(&patch.age_rating)),
+            ("collection_name", text(&patch.collection_name)),
+            ("origin_country", text(&patch.origin_country)),
+            ("creator", text(&patch.creator)),
+            ("poster_url", text(&patch.poster_url)),
+            ("backdrop_url", text(&patch.backdrop_url)),
+            ("trailer_url", text(&patch.trailer_url)),
+            ("metadata_locked", lock(&patch.metadata_locked)),
+        ];
+        if let Some(studio_id) = resolve_studio(pool, &patch.studio).await? {
+            cols.push(("studio_id", studio_id));
+        }
+        update_columns(pool, "movies", "item_id", item_id, cols).await?;
+
+        if let Some(g) = &patch.genres { set_item_genres(pool, item_id, g).await?; }
+        if let Some(t) = &patch.tags { set_item_tags(pool, item_id, t).await?; }
+        touch_item(pool, item_id).await
+    }
+
+    /// Apply a user edit to a series (the TV show grouping row).
+    pub async fn patch_series(&self, series_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let pool = &self.pool;
+        // `series.name` is NOT NULL and unique per library, so a rename can only set
+        // a non-empty value — never clear it.
+        let name = match &patch.title {
+            Some(Some(t)) if !t.trim().is_empty() => Some(t.trim().to_string()),
+            Some(_) => return Err(AppError::BadRequest("Series name cannot be empty".into())),
+            None => None,
+        };
+        let mut cols = vec![
+            ("year", int(&patch.year)),
+            ("plot", text(&patch.plot)),
+            ("rating", real(&patch.rating)),
+            ("age_rating", text(&patch.age_rating)),
+            ("collection_name", text(&patch.collection_name)),
+            ("origin_country", text(&patch.origin_country)),
+            ("creator", text(&patch.creator)),
+            ("poster_url", text(&patch.poster_url)),
+            ("backdrop_url", text(&patch.backdrop_url)),
+            ("trailer_url", text(&patch.trailer_url)),
+            ("metadata_locked", lock(&patch.metadata_locked)),
+        ];
+        if let Some(n) = name { cols.push(("name", Val::Text(Some(n)))); }
+        if let Some(studio_id) = resolve_studio(pool, &patch.studio).await? {
+            cols.push(("studio_id", studio_id));
+        }
+        update_columns(pool, "series", "id", series_id, cols).await?;
+
+        if let Some(g) = &patch.genres { set_series_genres(pool, series_id, g).await?; }
+        if let Some(t) = &patch.tags { set_series_tags(pool, series_id, t).await?; }
+        Ok(())
+    }
+
+    /// Apply a user edit to an episode's detail row.
+    pub async fn patch_episode(&self, item_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let pool = &self.pool;
+        let cols = vec![
+            ("title", text(&patch.title)),
+            ("plot", text(&patch.plot)),
+            ("episode_number", int(&patch.episode_number)),
+            ("runtime", int(&patch.runtime)),
+            ("air_date", text(&patch.air_date)),
+            ("still_url", text(&patch.still_url)),
+            ("metadata_locked", lock(&patch.metadata_locked)),
+        ];
+        update_columns(pool, "episodes", "item_id", item_id, cols).await?;
+        touch_item(pool, item_id).await
+    }
+
+    /// Apply a user edit to a book's detail row.
+    pub async fn patch_book(&self, item_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let pool = &self.pool;
+        let cols = vec![
+            ("title", text(&patch.title)),
+            ("plot", text(&patch.plot)),
+            ("poster_url", text(&patch.poster_url)),
+            ("page_count", int(&patch.page_count)),
+            ("publisher", text(&patch.publisher)),
+            ("published_date", text(&patch.published_date)),
+            ("isbn", text(&patch.isbn)),
+            ("metadata_locked", lock(&patch.metadata_locked)),
+        ];
+        update_columns(pool, "books", "item_id", item_id, cols).await?;
+
+        if let Some(g) = &patch.genres { set_item_genres(pool, item_id, g).await?; }
+        if let Some(t) = &patch.tags { set_item_tags(pool, item_id, t).await?; }
+        touch_item(pool, item_id).await
+    }
+
+    /// Apply a user edit to a music video's detail row.
+    pub async fn patch_music_video(&self, item_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let pool = &self.pool;
+        let cols = vec![
+            ("title", text(&patch.title)),
+            ("year", int(&patch.year)),
+            ("plot", text(&patch.plot)),
+            ("poster_url", text(&patch.poster_url)),
+            ("runtime", int(&patch.runtime)),
+        ];
+        update_columns(&self.pool, "music_videos", "item_id", item_id, cols).await?;
+        touch_item(pool, item_id).await
+    }
+
+    /// Apply a user edit to a photo's detail row.
+    pub async fn patch_image(&self, item_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let cols = vec![("title", text(&patch.title))];
+        update_columns(&self.pool, "images", "item_id", item_id, cols).await?;
+        touch_item(&self.pool, item_id).await
+    }
+
+    /// Apply a user edit to a book series (the grouping row).
+    pub async fn patch_book_series(&self, series_id: i64, patch: &MetadataPatch) -> Result<(), AppError> {
+        let name = match &patch.title {
+            Some(Some(t)) if !t.trim().is_empty() => Some(t.trim().to_string()),
+            Some(_) => return Err(AppError::BadRequest("Series name cannot be empty".into())),
+            None => None,
+        };
+        let mut cols = vec![
+            ("plot", text(&patch.plot)),
+            ("poster_url", text(&patch.poster_url)),
+            ("backdrop_url", text(&patch.backdrop_url)),
+            ("rating", real(&patch.rating)),
+        ];
+        if let Some(n) = name { cols.push(("name", Val::Text(Some(n)))); }
+        update_columns(&self.pool, "book_series", "id", series_id, cols).await
+    }
+
+    /// Whether a hand-edit pins this movie against automatic enrichment.
+    pub async fn movie_locked(&self, item_id: i64) -> Result<bool, AppError> {
+        self.is_locked("movies", "item_id", item_id).await
+    }
+
+    /// Whether a hand-edit pins this series against automatic enrichment.
+    pub async fn series_locked(&self, series_id: i64) -> Result<bool, AppError> {
+        self.is_locked("series", "id", series_id).await
+    }
+
+    /// Clear a movie's lock — an explicit re-identify overrides a hand-edit.
+    pub async fn unlock_movie(&self, item_id: i64) -> Result<(), AppError> {
+        self.unlock("movies", "item_id", item_id).await
+    }
+
+    /// Clear a series' lock (and its episodes'), for an explicit re-identify.
+    pub async fn unlock_series(&self, series_id: i64) -> Result<(), AppError> {
+        self.unlock("series", "id", series_id).await?;
+        sqlx::query(
+            "UPDATE episodes SET metadata_locked = 0 WHERE season_id IN
+             (SELECT id FROM seasons WHERE series_id = ?)"
+        ).bind(series_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// `table`/`key_col` are fixed strings from the wrappers above.
+    async fn is_locked(&self, table: &str, key_col: &str, key: i64) -> Result<bool, AppError> {
+        let locked = sqlx::query_scalar::<_, bool>(
+            &format!("SELECT metadata_locked FROM {table} WHERE {key_col} = ?")
+        ).bind(key).fetch_optional(&self.pool).await?;
+        Ok(locked.unwrap_or(false))
+    }
+
+    async fn unlock(&self, table: &str, key_col: &str, key: i64) -> Result<(), AppError> {
+        sqlx::query(&format!("UPDATE {table} SET metadata_locked = 0 WHERE {key_col} = ?"))
+            .bind(key).execute(&self.pool).await?;
+        Ok(())
+    }
+}
+
+// ── Private helpers (manual metadata edits) ─────────────────────────────────
+
+/// One column assignment built from a [`MetadataPatch`] field. `Skip` means the
+/// field was absent from the patch, so the column keeps its current value.
+enum Val {
+    Skip,
+    Text(Option<String>),
+    Int(Option<i64>),
+    Real(Option<f64>),
+}
+
+/// Text field: absent -> skip, `null` or blank -> clear, otherwise trimmed value.
+fn text(p: &Patch<String>) -> Val {
+    match p {
+        None => Val::Skip,
+        Some(None) => Val::Text(None),
+        Some(Some(s)) if s.trim().is_empty() => Val::Text(None),
+        Some(Some(s)) => Val::Text(Some(s.trim().to_string())),
+    }
+}
+
+fn int(p: &Patch<i64>) -> Val {
+    match p { None => Val::Skip, Some(v) => Val::Int(*v) }
+}
+
+fn real(p: &Patch<f64>) -> Val {
+    match p { None => Val::Skip, Some(v) => Val::Real(*v) }
+}
+
+fn lock(p: &Option<bool>) -> Val {
+    match p { None => Val::Skip, Some(v) => Val::Int(Some(i64::from(*v))) }
+}
+
+/// Resolve a patched studio *name* to a `studios` row id, creating it if needed.
+/// `Ok(None)` means the patch didn't touch the studio at all.
+async fn resolve_studio(pool: &SqlitePool, p: &Patch<String>) -> Result<Option<Val>, AppError> {
+    Ok(match p {
+        None => None,
+        Some(Some(name)) if !name.trim().is_empty() => {
+            Some(Val::Int(Some(get_or_create_studio(pool, name.trim()).await?)))
+        }
+        Some(_) => Some(Val::Int(None)),
+    })
+}
+
+/// `UPDATE <table> SET <provided columns> WHERE <key_col> = <key>`, a no-op when
+/// every column is [`Val::Skip`]. Column/table names are compile-time constants
+/// from the `patch_*` methods — never user input.
+async fn update_columns(
+    pool: &SqlitePool,
+    table: &str,
+    key_col: &str,
+    key: i64,
+    cols: Vec<(&str, Val)>,
+) -> Result<(), AppError> {
+    let cols: Vec<(&str, Val)> = cols.into_iter().filter(|(_, v)| !matches!(v, Val::Skip)).collect();
+    if cols.is_empty() { return Ok(()); }
+
+    let assignments = cols.iter().map(|(c, _)| format!("{c} = ?")).collect::<Vec<_>>().join(", ");
+    let sql = format!("UPDATE {table} SET {assignments} WHERE {key_col} = ?");
+    let mut q = sqlx::query(&sql);
+    for (_, v) in &cols {
+        q = match v {
+            Val::Text(t) => q.bind(t.clone()),
+            Val::Int(i) => q.bind(*i),
+            Val::Real(r) => q.bind(*r),
+            Val::Skip => unreachable!("filtered above"),
+        };
+    }
+    q.bind(key).execute(pool).await.map_err(unique_conflict)?;
+    Ok(())
+}
+
+/// A rename can collide with the `UNIQUE(library_id, name)` grouping constraint;
+/// report that as a 400 instead of a database 500.
+fn unique_conflict(e: sqlx::Error) -> AppError {
+    if e.to_string().contains("UNIQUE constraint failed") {
+        AppError::BadRequest("Another entry in this library already uses that name".into())
+    } else {
+        AppError::Database(e)
+    }
+}
+
+/// Mark the spine row as changed so "recently updated" ordering stays honest.
+async fn touch_item(pool: &SqlitePool, item_id: i64) -> Result<(), AppError> {
+    sqlx::query("UPDATE media_items SET updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(item_id).execute(pool).await?;
+    Ok(())
 }
 
 // ── Private helpers (normalized lookup/join tables) ─────────────────────────
@@ -476,4 +753,117 @@ async fn set_credits(
 
 fn parse_year(meta: &NormalizedMetadata) -> Option<i64> {
     meta.year.as_ref().and_then(|y| y.get(0..4)).and_then(|y| y.parse::<i64>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::metadata::MetadataPatch;
+    use crate::test_support::{seed_library, seed_movie, test_pool};
+
+    /// A movie with a plot and a genre already filled in by a provider.
+    async fn seeded_movie(pool: &SqlitePool) -> i64 {
+        let lib = seed_library(pool, "Movies", "movies").await;
+        let id = seed_movie(pool, lib, "/data/heat.mkv", "Heat").await;
+        sqlx::query("UPDATE movies SET plot = 'Original plot', year = 1995 WHERE item_id = ?")
+            .bind(id).execute(pool).await.unwrap();
+        id
+    }
+
+    async fn movie_row(pool: &SqlitePool, id: i64) -> (Option<String>, Option<String>, Option<i64>, bool) {
+        sqlx::query_as("SELECT title, plot, year, metadata_locked FROM movies WHERE item_id = ?")
+            .bind(id).fetch_one(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn patch_writes_only_provided_fields() {
+        let pool = test_pool().await;
+        let id = seeded_movie(&pool).await;
+
+        let patch = serde_json::from_str::<MetadataPatch>(r#"{"title": "Heat (Director's Cut)"}"#).unwrap();
+        CatalogService::new(pool.clone()).patch_movie(id, &patch).await.unwrap();
+
+        let (title, plot, year, _) = movie_row(&pool, id).await;
+        assert_eq!(title.as_deref(), Some("Heat (Director's Cut)"));
+        assert_eq!(plot.as_deref(), Some("Original plot"), "absent fields must be untouched");
+        assert_eq!(year, Some(1995));
+    }
+
+    #[tokio::test]
+    async fn explicit_null_clears_a_field() {
+        let pool = test_pool().await;
+        let id = seeded_movie(&pool).await;
+
+        let patch = serde_json::from_str::<MetadataPatch>(r#"{"plot": null, "year": null}"#).unwrap();
+        CatalogService::new(pool.clone()).patch_movie(id, &patch).await.unwrap();
+
+        let (_, plot, year, _) = movie_row(&pool, id).await;
+        assert_eq!(plot, None);
+        assert_eq!(year, None);
+    }
+
+    #[tokio::test]
+    async fn patch_replaces_genres_and_resolves_studio() {
+        let pool = test_pool().await;
+        let id = seeded_movie(&pool).await;
+
+        let patch = serde_json::from_str::<MetadataPatch>(
+            r#"{"genres": ["Crime", "Drama"], "studio": "Warner Bros."}"#
+        ).unwrap();
+        CatalogService::new(pool.clone()).patch_movie(id, &patch).await.unwrap();
+
+        let genres: Vec<String> = sqlx::query_scalar(
+            "SELECT g.name FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+             WHERE ig.item_id = ? ORDER BY g.name"
+        ).bind(id).fetch_all(&pool).await.unwrap();
+        assert_eq!(genres, vec!["Crime".to_string(), "Drama".to_string()]);
+
+        let studio: Option<String> = sqlx::query_scalar(
+            "SELECT s.name FROM movies m JOIN studios s ON s.id = m.studio_id WHERE m.item_id = ?"
+        ).bind(id).fetch_optional(&pool).await.unwrap();
+        assert_eq!(studio.as_deref(), Some("Warner Bros."));
+    }
+
+    #[tokio::test]
+    async fn locked_movie_is_not_overwritten_by_provider_metadata() {
+        let pool = test_pool().await;
+        let id = seeded_movie(&pool).await;
+        let catalog = CatalogService::new(pool.clone());
+
+        let patch = serde_json::from_str::<MetadataPatch>(
+            r#"{"title": "My Title", "metadata_locked": true}"#
+        ).unwrap();
+        catalog.patch_movie(id, &patch).await.unwrap();
+        assert!(catalog.movie_locked(id).await.unwrap());
+
+        let meta = NormalizedMetadata { title: "Provider Title".into(), ..Default::default() };
+        catalog.apply_movie_metadata(id, &meta).await.unwrap();
+
+        let (title, _, _, locked) = movie_row(&pool, id).await;
+        assert_eq!(title.as_deref(), Some("My Title"));
+        assert!(locked);
+
+        // Unlocking lets provider data through again.
+        catalog.unlock_movie(id).await.unwrap();
+        catalog.apply_movie_metadata(id, &meta).await.unwrap();
+        let (title, _, _, _) = movie_row(&pool, id).await;
+        assert_eq!(title.as_deref(), Some("Provider Title"));
+    }
+
+    #[tokio::test]
+    async fn series_rename_rejects_a_blank_name() {
+        let pool = test_pool().await;
+        let lib = seed_library(&pool, "Shows", "tvshows").await;
+        let catalog = CatalogService::new(pool.clone());
+        let series_id = catalog.get_or_create_series(lib, "The Wire").await.unwrap();
+
+        let patch = serde_json::from_str::<MetadataPatch>(r#"{"title": "  "}"#).unwrap();
+        assert!(catalog.patch_series(series_id, &patch).await.is_err());
+
+        let patch = serde_json::from_str::<MetadataPatch>(r#"{"title": "The Wire (2002)"}"#).unwrap();
+        catalog.patch_series(series_id, &patch).await.unwrap();
+        let name: String = sqlx::query_scalar("SELECT name FROM series WHERE id = ?")
+            .bind(series_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(name, "The Wire (2002)");
+    }
 }

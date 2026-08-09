@@ -1,6 +1,6 @@
 [package]
 name = "vortex_server"
-version = "0.2.16"
+version = "0.2.17"
 edition = "2021"
 default-run = "vortex_server"
 

@@ -1,11 +1,13 @@
 use axum::{
     extract::{Path, State},
-    Json,
+    Extension, Json,
 };
 use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::services::{media_service, catalog_service::CatalogService};
 use crate::api::dtos::requests::IdentifyRequest;
+use crate::api::middleware::AuthUser;
+use crate::models::metadata::MetadataPatch;
 use crate::api::dtos::responses::{Card, SeasonDto, SeriesDetail, EpisodeDto};
 
 #[derive(serde::Deserialize)]
@@ -81,11 +83,37 @@ async fn refresh_episode_details(pool: &SqlitePool, series_id: i64, provider_id:
     Ok(())
 }
 
+/// Save a hand-authored edit to a series. Sparse patch semantics: absent fields are
+/// left alone, `null` clears one. Saving pins the series against auto-refresh unless
+/// the caller explicitly sets `metadata_locked: false`.
+pub async fn update_series_metadata(
+    Extension(auth_user): Extension<AuthUser>,
+    State(pool): State<SqlitePool>,
+    Path(series_id): Path<i64>,
+    Json(mut patch): Json<MetadataPatch>,
+) -> Result<Json<SeriesDetail>, AppError> {
+    auth_user.require_admin()?;
+    if patch.is_empty() {
+        return Err(AppError::BadRequest("No metadata fields to update".into()));
+    }
+    patch.metadata_locked.get_or_insert(true);
+
+    CatalogService::new(pool.clone()).patch_series(series_id, &patch).await?;
+    Ok(Json(media_service::MediaService::new(pool.clone()).series_detail(series_id).await?))
+}
+
 pub async fn refresh_series_metadata(
     Path(series_id): Path<i64>,
     State(pool): State<SqlitePool>,
 ) -> Result<Json<SeriesDetail>, AppError> {
     use crate::services::metadata_service::MetadataService;
+
+    // A hand-edited series is pinned; refreshing it would silently discard the edit.
+    if CatalogService::new(pool.clone()).series_locked(series_id).await? {
+        return Err(AppError::BadRequest(
+            "This series' metadata is locked by a manual edit. Unlock it (or re-identify) to refresh.".into(),
+        ));
+    }
 
     let svc = MetadataService::new(pool.clone());
     let (name, provider_ids) = media_service::MediaService::new(pool.clone()).series_provider_lookup(series_id).await?;
@@ -119,6 +147,9 @@ pub async fn identify_series(
     Json(payload): Json<IdentifyRequest>,
 ) -> Result<Json<SeriesDetail>, AppError> {
     use crate::services::metadata_service::MetadataService;
+
+    // Identifying is an explicit "use this show instead" — it overrides a lock.
+    CatalogService::new(pool.clone()).unlock_series(series_id).await?;
 
     let media_type = payload.media_type.as_deref().or(Some("series"));
     let meta = MetadataService::new(pool.clone())

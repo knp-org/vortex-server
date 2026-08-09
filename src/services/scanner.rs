@@ -16,6 +16,7 @@ use crate::models::metadata::{NormalizedMetadata, EpisodeMetadata};
 // Static regex patterns - compiled once for performance
 static SEASON_REGEX: OnceLock<Regex> = OnceLock::new();
 static EPISODE_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+static CHAPTER_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "wmv", "m4v", "mpg", "mpeg", "flv", "ts"];
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "m4a", "m4b", "aac", "ogg", "oga", "opus", "wav", "wma", "alac", "aiff", "aif", "ape", "wv", "mpc"];
@@ -231,6 +232,30 @@ fn parse_tv_show_info(path: &Path, library_path: &str, library_name: &str) -> Op
     None
 }
 
+fn get_chapter_patterns() -> &'static Vec<Regex> {
+    CHAPTER_PATTERNS.get_or_init(|| vec![
+        Regex::new(r"\bch(?:apter)?[\s._-]*(\d+(?:\.\d+)?)").unwrap(), // Chapter 12, Ch.12, ch_12.5
+        Regex::new(r"\bep(?:isode)?[\s._-]*(\d+(?:\.\d+)?)").unwrap(), // Episode 12, Ep12
+        Regex::new(r"\bvol(?:ume)?[\s._-]*(\d+(?:\.\d+)?)").unwrap(),  // Volume 3, Vol.3
+        Regex::new(r"(?:^|[\s._-])(\d+(?:\.\d+)?)\s*$").unwrap(),      // trailing "… 105"
+        Regex::new(r"[-\s](\d{1,4}(?:\.\d+)?)[-\s]").unwrap(),         // - 105 -
+    ])
+}
+
+/// Extract a chapter number from a book/comic filename ("Chapter 105", "Ch.12.5",
+/// "Series - 042", "Something 7"). `None` when nothing numeric is recognizable.
+fn parse_chapter_number(filename: &str) -> Option<f64> {
+    let lower = filename.to_lowercase();
+    for pattern in get_chapter_patterns() {
+        if let Some(caps) = pattern.captures(&lower) {
+            if let Some(num) = caps.get(1).and_then(|m| m.as_str().parse().ok()) {
+                return Some(num);
+            }
+        }
+    }
+    None
+}
+
 fn parse_episode_number(filename: &str) -> Option<i64> {
     let lower = filename.to_lowercase();
     for pattern in get_episode_patterns() {
@@ -280,12 +305,12 @@ async fn process_book(pool: &SqlitePool, path: &Path, root_path: &str, library: 
     let mut book_series_id: Option<i64> = None;
     let mut chapter_number: Option<f64> = None;
 
-    if let Some((series_name, _, ep_num)) = parse_tv_show_info(path, root_path, &library.name) {
+    if let Some((series_name, _, _)) = parse_tv_show_info(path, root_path, &library.name) {
         // If parse_tv_show_info returned a series name that differs from the library name, it means it's in a folder.
         if series_name != library.name {
             if let Ok(id) = CatalogService::get_or_create_book_series(pool, library.id, &series_name).await {
                 book_series_id = Some(id);
-                chapter_number = Some(ep_num as f64);
+                chapter_number = parse_chapter_number(&file_stem);
             }
         }
     }

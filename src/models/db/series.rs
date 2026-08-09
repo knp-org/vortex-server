@@ -20,4 +20,6 @@ pub struct Series {
     pub origin_country: Option<String>,
     pub creator: Option<String>,
     pub provider_ids: Option<String>,
+    /// Hand-edited: automatic metadata refreshes skip this row.
+    pub metadata_locked: bool,
 }
