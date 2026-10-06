@@ -22,7 +22,9 @@ const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "wmv", "
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "m4a", "m4b", "aac", "ogg", "oga", "opus", "wav", "wma", "alac", "aiff", "aif", "ape", "wv", "mpc"];
 
 fn get_season_regex() -> &'static Regex {
-    SEASON_REGEX.get_or_init(|| Regex::new(r"season\s*(\d+)").unwrap())
+    SEASON_REGEX.get_or_init(|| {
+        Regex::new(r"(?:^|[\s._-])(?:season|s)[\s._-]*(\d+)(?:$|[\s._-])").unwrap()
+    })
 }
 
 fn get_episode_patterns() -> &'static Vec<Regex> {
@@ -32,6 +34,7 @@ fn get_episode_patterns() -> &'static Vec<Regex> {
         Regex::new(r"ep(?:isode)?\s*(\d+)").unwrap(), // Episode 5, Ep5
         Regex::new(r"[-\s](\d{1,3})[-\s]").unwrap(),  // - 05 -
         Regex::new(r"(?:^|\s)e(\d+)").unwrap(),       // E05
+        Regex::new(r"(?:^|[\s._-])(\d{1,3})$").unwrap(), // Show - 05
     ])
 }
 

@@ -8,7 +8,7 @@ use tower_http::cors::CorsLayer;
 use sqlx::SqlitePool;
 use crate::api::handlers::{
     library::{get_libraries, create_library, delete_library, scan_all_libraries, list_directories, browse_library, scan_library, refresh_library, get_library_providers, update_library_providers},
-    media::{get_recently_added, get_library_media, get_media_details, refresh_media_metadata, search_handler, identify_media, search_library, get_track_lyrics, update_media_metadata},
+    media::{get_recently_added, get_library_media, get_media_details, get_next_episode, refresh_media_metadata, search_handler, identify_media, search_library, get_track_lyrics, update_media_metadata},
     playback::{stream_video, update_progress, get_continue_watching, get_media_progress, get_subtitles, stream_subtitle, stream_embedded_subtitle, get_audio_tracks, get_thumbnail},
     transcode::{get_stream_info, get_hls_playlist, get_hls_segment},
     images::{get_image, get_image_file, update_image},
@@ -71,6 +71,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/api/v1/libraries/:id/browse", get(browse_library))
         .route("/api/v1/libraries/:id/providers", get(get_library_providers).put(update_library_providers))
         .route("/api/v1/media/:id", get(get_media_details).put(update_media_metadata))
+        .route("/api/v1/media/:id/next-episode", get(get_next_episode))
         // .route("/api/v1/media/:id/thumbnail", get(get_thumbnail)) - Moved to public
         .route("/api/v1/media/:id/refresh", axum::routing::post(refresh_media_metadata))
         .route("/api/v1/media/:id/identify", axum::routing::post(identify_media))
@@ -175,4 +176,3 @@ pub fn app(pool: SqlitePool) -> Router {
         .layer(middleware::from_fn(request_logging))
         .with_state(state)
 }
-

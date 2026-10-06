@@ -30,6 +30,14 @@ pub async fn get_recently_added(State(pool): State<SqlitePool>) -> Result<Json<V
     Ok(Json(media_service::MediaService::new(pool.clone()).recently_added().await?))
 }
 
+/// Resolve the next locally available episode after an episode item.
+pub async fn get_next_episode(
+    State(pool): State<SqlitePool>,
+    Path(id): Path<i64>,
+) -> Result<Json<Option<crate::api::dtos::responses::EpisodeDto>>, AppError> {
+    Ok(Json(media_service::MediaService::new(pool).next_episode(id).await?))
+}
+
 #[derive(serde::Deserialize)]
 pub struct LyricsQuery {
     pub force: Option<bool>,

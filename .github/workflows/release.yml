@@ -149,6 +149,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
           files: |
             vortex_server_amd64.deb/vortex_server_amd64.deb
             vortex_server_arm64.deb/vortex_server_arm64.deb

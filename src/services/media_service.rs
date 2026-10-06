@@ -55,6 +55,9 @@ impl MediaService {
     pub async fn episode_detail(&self, item_id: i64) -> Result<EpisodeDto, AppError> {
         episode_detail(&self.pool, item_id).await
     }
+    pub async fn next_episode(&self, item_id: i64) -> Result<Option<EpisodeDto>, AppError> {
+        next_episode(&self.pool, item_id).await
+    }
     pub async fn book_detail(&self, item_id: i64) -> Result<BookDetail, AppError> {
         book_detail(&self.pool, item_id).await
     }
@@ -469,6 +472,45 @@ async fn episode_detail(pool: &SqlitePool, item_id: i64) -> Result<EpisodeDto, A
         stream_url: stream_url(item_id),
         metadata_locked,
     })
+}
+
+/// Return the next scanned episode in canonical series/season/episode order.
+///
+/// Resolving this in one database query avoids the client racing several detail,
+/// season and episode-list requests while playback is ending. `item_id` is the
+/// final tie-breaker so imperfect libraries containing duplicate episode numbers
+/// still advance deterministically instead of appearing to have no successor.
+async fn next_episode(pool: &SqlitePool, item_id: i64) -> Result<Option<EpisodeDto>, AppError> {
+    let next_id = sqlx::query_scalar::<_, i64>(
+        "SELECT candidate.item_id
+         FROM episodes current
+         JOIN seasons current_season ON current_season.id = current.season_id
+         JOIN seasons candidate_season ON candidate_season.series_id = current_season.series_id
+         JOIN episodes candidate ON candidate.season_id = candidate_season.id
+         WHERE current.item_id = ?
+           AND current.episode_number IS NOT NULL
+           AND candidate.episode_number IS NOT NULL
+           AND (
+                candidate_season.season_number > current_season.season_number
+                OR (
+                    candidate_season.season_number = current_season.season_number
+                    AND (
+                        candidate.episode_number > current.episode_number
+                        OR (candidate.episode_number = current.episode_number AND candidate.item_id > current.item_id)
+                    )
+                )
+           )
+         ORDER BY candidate_season.season_number, candidate.episode_number, candidate.item_id
+         LIMIT 1"
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?;
+
+    match next_id {
+        Some(id) => Ok(Some(episode_detail(pool, id).await?)),
+        None => Ok(None),
+    }
 }
 
 async fn book_detail(pool: &SqlitePool, item_id: i64) -> Result<BookDetail, AppError> {
