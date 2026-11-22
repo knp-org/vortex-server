@@ -19,6 +19,9 @@ pub struct UpdateProgressRequest {
     position: i64,
     total_duration: i64,
     reading_style: Option<String>,
+    /// Opaque per-format resume locator. EPUB readers send an epub.js CFI here;
+    /// omitting it keeps whatever was stored before.
+    location: Option<String>,
 }
 
 /// One in-progress item for the per-user "continue watching" rail.
@@ -31,6 +34,10 @@ pub struct ContinueItem {
     pub position: i64,
     pub total_duration: i64,
     pub reading_style: Option<String>,
+    /// Opaque per-format resume locator (EPUB CFI); `None` for paged formats.
+    pub location: Option<String>,
+    /// Where the client fetches the content: the video stream for playable items,
+    /// the raw book file for books (PDF/EPUB/CBZ).
     pub stream_url: String,
 }
 
@@ -42,6 +49,11 @@ pub async fn get_continue_watching(
 
     let items = rows.into_iter()
         .map(|r| ContinueItem {
+            stream_url: if r.item_type == "book" {
+                format!("/api/v1/books/{}/file", r.id)
+            } else {
+                format!("/api/v1/stream/{}", r.id)
+            },
             id: r.id,
             kind: r.item_type,
             title: r.title,
@@ -49,7 +61,7 @@ pub async fn get_continue_watching(
             position: r.position,
             total_duration: r.total_duration,
             reading_style: r.reading_style,
-            stream_url: format!("/api/v1/stream/{}", r.id),
+            location: r.location,
         })
         .collect();
 
@@ -63,7 +75,14 @@ pub async fn update_progress(
     Json(payload): Json<UpdateProgressRequest>,
 ) -> Result<StatusCode, AppError> {
     ProgressService::new(pool)
-        .update(user.id, id, payload.position, payload.total_duration, payload.reading_style.as_deref())
+        .update(
+            user.id,
+            id,
+            payload.position,
+            payload.total_duration,
+            payload.reading_style.as_deref(),
+            payload.location.as_deref(),
+        )
         .await?;
 
     Ok(StatusCode::OK)
@@ -74,11 +93,13 @@ pub async fn get_media_progress(
     State(pool): State<SqlitePool>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let (position, style) = ProgressService::new(pool).get(user.id, id).await?;
+    let progress = ProgressService::new(pool).get(user.id, id).await?;
 
     Ok(Json(serde_json::json!({
-        "position": position,
-        "reading_style": style
+        "position": progress.position,
+        "total_duration": progress.total_duration,
+        "reading_style": progress.reading_style,
+        "location": progress.location
     })))
 }
 

@@ -35,6 +35,9 @@ Desktop.ini
 server.log
 test_*.py
 test_*.rs
+# ...but src/test_support.rs is real source: `mod test_support;` is declared in
+# main.rs, so without it `cargo test` will not compile on a fresh clone.
+!src/test_support.rs
 debug_*.py
 fix_*.py
 
