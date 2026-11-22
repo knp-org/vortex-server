@@ -1,6 +1,7 @@
 //! Book reader endpoints.
 //!
-//! - `info`         metadata the reader needs (format, page count, reading mode).
+//! - `info`         metadata the reader needs (format, page count, reading mode)
+//!                  plus this user's resume point, so opening a book is one call.
 //! - `page/:index`  individual CBZ page image (extracted on the server).
 //! - `file`         raw PDF/EPUB byte stream (range-aware) for client-side rendering.
 //! - `reading-mode` persist the user's chosen reading mode for a book.
@@ -10,16 +11,18 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
+use crate::api::middleware::AuthUser;
 use crate::error::AppError;
 use crate::services::book_service::BookService;
 use crate::services::books::{self, BookFormat};
+use crate::services::progress_service::ProgressService;
 
 #[derive(Serialize)]
 pub struct BookInfo {
@@ -28,12 +31,20 @@ pub struct BookInfo {
     pub format: String,
     pub page_count: Option<i64>,
     pub reading_mode: String,
+    /// Where this user left off: page index for CBZ/PDF, permille of the book for
+    /// EPUB. `0` when unread.
+    pub position: i64,
+    /// Exact EPUB resume point (epub.js CFI). `None` for paged formats and for a
+    /// book this user has not opened yet.
+    pub location: Option<String>,
 }
 
 pub async fn get_book_info(
     Path(id): Path<i64>,
     State(pool): State<SqlitePool>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<BookInfo>, AppError> {
+    let progress = ProgressService::new(pool.clone()).get(user.id, id).await?;
     let service = BookService::new(pool);
     let book = service.get(id).await?;
 
@@ -57,6 +68,8 @@ pub async fn get_book_info(
         format: format.as_str().to_string(),
         page_count,
         reading_mode,
+        position: progress.position,
+        location: progress.location,
     }))
 }
 
